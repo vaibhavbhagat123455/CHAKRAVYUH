@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI Chakravyuh Tool Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["request_id", "tool", "arguments", "purpose", "scenario_id"],
+  "properties": {
+    "request_id": {"type": "string", "minLength": 1},
+    "tool": {"type": "string", "minLength": 1},
+    "arguments": {"type": "object"},
+    "purpose": {"type": "string", "minLength": 1},
+    "scenario_id": {"type": "string", "minLength": 1}
+  }
+}

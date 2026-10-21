@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI Chakravyuh Decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["request_id", "decision", "evidence_id", "reason", "policy_version"],
+  "properties": {
+    "request_id": {"type": "string", "minLength": 1},
+    "decision": {"enum": ["ALLOW", "HOLD", "DENY"]},
+    "evidence_id": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1},
+    "policy_version": {"type": "string", "minLength": 1}
+  }
+}

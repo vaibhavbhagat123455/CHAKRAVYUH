@@ -50,7 +50,7 @@ class ThreatAnalyser:
         # goal-drift attempt. This keeps the approval path demonstrable.
         high_risk = bool(sensitive_hits and (external_hits or injection_hits or goal_drift))
         medium_risk = bool(sensitive_hits or external_hits or goal_drift)
-        if high_risk:
+        if sensitive_hits:
             risk = "high"
             score = 0.96 if injection_hits or goal_drift else 0.86
         elif medium_risk or injection_hits:

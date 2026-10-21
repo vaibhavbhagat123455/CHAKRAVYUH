@@ -8,6 +8,13 @@ This branch contains the AI threat-analysis and repeatable synthetic scenario en
 python -m pytest -q
 ```
 
+The repository also has a standard-library-only validator, so the core Member
+3 checks run even before pytest is installed:
+
+```bash
+python validate_member3.py
+```
+
 ## Run the scenario analyser
 
 ```bash

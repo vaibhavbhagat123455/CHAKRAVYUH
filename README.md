@@ -8,4 +8,15 @@ This branch contains the AI threat-analysis and repeatable synthetic scenario en
 python -m pytest -q
 ```
 
+## Run the scenario analyser
+
+```bash
+python -m ai.run_scenarios scenarios
+python -m ai.run_scenarios scenarios/malicious_pdf.json
+```
+
+Expected recommendations are `DENY` for the malicious PDF, `ALLOW` for the
+safe summary and `HOLD` for the confidential report. These are advisory AI
+signals; the Member 2 checkpoint remains the final execution authority.
+
 The analyser detects indirect prompt injection, goal drift, sensitive-data risk and external destinations. It returns structured advisory signals. The MCP checkpoint must remain the final authority for ALLOW, HOLD or DENY.

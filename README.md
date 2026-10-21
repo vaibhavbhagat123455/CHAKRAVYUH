@@ -17,3 +17,7 @@ pytest -q
 ```
 
 The `main` branch contains shared contracts and schemas. Member branches add their modules. AI analysis returns structured advisory signals; the MCP checkpoint remains the final authority for ALLOW, HOLD or DENY.
+
+## Member 4: approval dashboard and demo
+
+See [docs/MEMBER4.md](docs/MEMBER4.md) for the one-time approval service, local dashboard, notification setup, and demo commands.

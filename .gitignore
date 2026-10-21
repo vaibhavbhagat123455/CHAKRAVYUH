@@ -5,5 +5,6 @@ __pycache__/
 .env
 data/security_log.jsonl
 data/*.tampered.jsonl
+data/*.jsonl
 replay.json
 *.log

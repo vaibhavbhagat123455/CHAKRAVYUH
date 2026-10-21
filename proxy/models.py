@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+from core.contracts import DECISIONS, POLICY_VERSION, validate_decision
+
+ALLOW = "ALLOW"
+HOLD = "HOLD"
+DENY = "DENY"
 
 _TOOL_REQUEST_REQUIRED_FIELDS = ("request_id", "tool", "arguments", "purpose", "scenario_id")
 
@@ -66,3 +72,33 @@ class ToolRequest:
             purpose=data["purpose"],
             scenario_id=data["scenario_id"],
         )
+
+
+@dataclass(frozen=True)
+class Decision:
+    """Frozen contract representing the pure deterministic checkpoint output."""
+
+    request_id: str
+    decision: str
+    evidence_id: str
+    reason: str
+    policy_version: str = POLICY_VERSION
+    risk_signals: Optional[Dict[str, Any]] = None
+    rule_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        validate_decision(self.decision)
+        for field_name in ("request_id", "evidence_id", "reason", "policy_version"):
+            val = getattr(self, field_name)
+            if not isinstance(val, str) or not val.strip():
+                raise ValueError(f"Field '{field_name}' must be a non-empty string, got: {val!r}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert decision to dictionary matching schemas/decision.schema.json exactly."""
+        return {
+            "request_id": self.request_id,
+            "decision": self.decision,
+            "evidence_id": self.evidence_id,
+            "reason": self.reason,
+            "policy_version": self.policy_version,
+        }

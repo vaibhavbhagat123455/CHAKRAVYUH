@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 import unittest
 
-from proxy.models import ToolRequest
+from core.contracts import DECISIONS, POLICY_VERSION
+from proxy.models import ALLOW, DENY, HOLD, Decision, ToolRequest
 
 
 class TestToolRequest(unittest.TestCase):
@@ -85,6 +86,61 @@ class TestToolRequest(unittest.TestCase):
         req = ToolRequest.from_dict(self.valid_payload)
         with self.assertRaises(Exception):
             req.tool = "other"  # type: ignore
+
+
+class TestDecision(unittest.TestCase):
+    """Test Decision model reusing core constants and validating schema compliance."""
+
+    def test_exposed_constants(self) -> None:
+        self.assertEqual(ALLOW, "ALLOW")
+        self.assertEqual(HOLD, "HOLD")
+        self.assertEqual(DENY, "DENY")
+        self.assertEqual(DECISIONS, {"ALLOW", "HOLD", "DENY"})
+        self.assertEqual(POLICY_VERSION, "v1")
+
+    def test_valid_decision_to_dict_has_exactly_five_schema_keys(self) -> None:
+        dec = Decision(
+            request_id="req-101",
+            decision=ALLOW,
+            evidence_id="ev-1234567890ab",
+            reason="Safe summary action approved",
+            policy_version="v1",
+            risk_signals={"prompt_injection": False},
+            rule_id="R6",
+        )
+        d = dec.to_dict()
+        expected_keys = {"request_id", "decision", "evidence_id", "reason", "policy_version"}
+        self.assertEqual(set(d.keys()), expected_keys)
+        self.assertEqual(len(d), 5)
+        self.assertNotIn("risk_signals", d)
+        self.assertNotIn("rule_id", d)
+
+        # Check against schema file
+        schema_path = Path(__file__).parents[1] / "schemas" / "decision.schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        self.assertEqual(set(schema["required"]), expected_keys)
+
+    def test_invalid_decision_raises_value_error(self) -> None:
+        with self.assertRaises(ValueError):
+            Decision(
+                request_id="req-101",
+                decision="EXECUTE",
+                evidence_id="ev-1234567890ab",
+                reason="Invalid",
+            )
+
+    def test_empty_string_fields_raise_value_error(self) -> None:
+        for key in ("request_id", "evidence_id", "reason", "policy_version"):
+            kwargs = {
+                "request_id": "req-1",
+                "decision": ALLOW,
+                "evidence_id": "ev-1",
+                "reason": "ok",
+                "policy_version": "v1",
+            }
+            kwargs[key] = ""
+            with self.assertRaises(ValueError):
+                Decision(**kwargs)
 
 
 if __name__ == "__main__":

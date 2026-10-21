@@ -5,7 +5,19 @@ from pathlib import Path
 import unittest
 
 from core.contracts import DECISIONS, POLICY_VERSION
-from proxy.models import ALLOW, DENY, HOLD, Decision, ToolRequest
+from proxy.models import (
+    ALLOW,
+    BLOCK,
+    DENY,
+    FLAG,
+    HOLD,
+    PASS,
+    ApprovalResult,
+    Decision,
+    DecisionSignals,
+    LayerResult,
+    ToolRequest,
+)
 
 
 class TestToolRequest(unittest.TestCase):
@@ -141,6 +153,143 @@ class TestDecision(unittest.TestCase):
             kwargs[key] = ""
             with self.assertRaises(ValueError):
                 Decision(**kwargs)
+
+
+class TestLayerResult(unittest.TestCase):
+    """Test LayerResult validation and constants."""
+
+    def test_constants(self) -> None:
+        self.assertEqual(PASS, "PASS")
+        self.assertEqual(FLAG, "FLAG")
+        self.assertEqual(BLOCK, "BLOCK")
+
+    def test_valid_layer_result(self) -> None:
+        res = LayerResult(
+            layer_id="DWAAR",
+            status=PASS,
+            reason="Tool is allowlisted",
+            evidence_id="ev-123",
+        )
+        self.assertEqual(
+            res.to_dict(),
+            {
+                "layer_id": "DWAAR",
+                "status": "PASS",
+                "reason": "Tool is allowlisted",
+                "evidence_id": "ev-123",
+            },
+        )
+
+    def test_invalid_status_raises_value_error(self) -> None:
+        with self.assertRaises(ValueError):
+            LayerResult(
+                layer_id="DWAAR",
+                status="UNKNOWN",
+                reason="test",
+                evidence_id="ev-1",
+            )
+
+
+class TestDecisionSignals(unittest.TestCase):
+    """Test DecisionSignals validation and serialization."""
+
+    def setUp(self) -> None:
+        self.valid_data = {
+            "prompt_injection": False,
+            "goal_drift": False,
+            "sensitive_data_risk": "low",
+            "risk_score": 0.15,
+            "recommended_action": "ALLOW",
+            "reason": "Clean benign input",
+        }
+
+    def test_valid_signals(self) -> None:
+        sig = DecisionSignals.from_dict(self.valid_data)
+        self.assertFalse(sig.prompt_injection)
+        self.assertFalse(sig.goal_drift)
+        self.assertEqual(sig.sensitive_data_risk, "low")
+        self.assertAlmostEqual(sig.risk_score, 0.15)
+        self.assertEqual(sig.recommended_action, "ALLOW")
+        self.assertEqual(sig.to_dict(), self.valid_data)
+
+    def test_invalid_field_values_raise_value_error(self) -> None:
+        # non-bool prompt_injection
+        d = dict(self.valid_data)
+        d["prompt_injection"] = "true"  # type: ignore
+        with self.assertRaises(ValueError):
+            DecisionSignals.from_dict(d)
+
+        # invalid sensitive_data_risk
+        d = dict(self.valid_data)
+        d["sensitive_data_risk"] = "critical"
+        with self.assertRaises(ValueError):
+            DecisionSignals.from_dict(d)
+
+        # risk score out of range
+        d = dict(self.valid_data)
+        d["risk_score"] = 1.5
+        with self.assertRaises(ValueError):
+            DecisionSignals.from_dict(d)
+
+        # recommended_action not in DECISIONS
+        d = dict(self.valid_data)
+        d["recommended_action"] = "EXECUTE"
+        with self.assertRaises(ValueError):
+            DecisionSignals.from_dict(d)
+
+        # empty reason
+        d = dict(self.valid_data)
+        d["reason"] = "   "
+        with self.assertRaises(ValueError):
+            DecisionSignals.from_dict(d)
+
+        # missing and unknown fields
+        del d["reason"]
+        with self.assertRaises(ValueError):
+            DecisionSignals.from_dict(d)
+
+        d = dict(self.valid_data)
+        d["extra"] = 1
+        with self.assertRaises(ValueError):
+            DecisionSignals.from_dict(d)
+
+
+class TestApprovalResult(unittest.TestCase):
+    """Test ApprovalResult validation and serialization."""
+
+    def test_valid_approval_result(self) -> None:
+        appr = ApprovalResult(
+            approved=True,
+            approval_id="appr-101",
+            action_digest="digest-abc",
+            reason="OTP verified",
+        )
+        self.assertEqual(
+            appr.to_dict(),
+            {
+                "approved": True,
+                "approval_id": "appr-101",
+                "action_digest": "digest-abc",
+                "reason": "OTP verified",
+            },
+        )
+
+    def test_invalid_fields_raise_value_error(self) -> None:
+        with self.assertRaises(ValueError):
+            ApprovalResult(
+                approved="true",  # type: ignore
+                approval_id="appr-1",
+                action_digest="dig",
+                reason="ok",
+            )
+
+        with self.assertRaises(ValueError):
+            ApprovalResult(
+                approved=True,
+                approval_id="",
+                action_digest="dig",
+                reason="ok",
+            )
 
 
 if __name__ == "__main__":

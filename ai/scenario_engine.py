@@ -18,6 +18,8 @@ class ScenarioEngine:
 
     @staticmethod
     def from_dict(raw: Dict) -> Scenario:
+        if not isinstance(raw, dict):
+            raise ValueError("scenario must be a JSON object")
         required = {"scenario_id", "name", "original_goal", "content", "tool_request", "expected_decision"}
         missing = required - raw.keys()
         if missing:
@@ -27,10 +29,13 @@ class ScenarioEngine:
             raise ValueError("tool_request.scenario_id must match scenario_id")
         if raw["expected_decision"] not in {"ALLOW", "HOLD", "DENY"}:
             raise ValueError("expected_decision must be ALLOW, HOLD or DENY")
+        expected_signals = raw.get("expected_signals", {})
+        if not isinstance(expected_signals, dict):
+            raise ValueError("expected_signals must be a JSON object")
         return Scenario(
             scenario_id=raw["scenario_id"], name=raw["name"], original_goal=raw["original_goal"],
             content=raw["content"], tool_request=request, expected_decision=raw["expected_decision"],
-            expected_signals=raw.get("expected_signals", {}), metadata=raw.get("metadata", {}),
+            expected_signals=expected_signals, metadata=raw.get("metadata", {}),
         )
 
     def analyse(self, scenario: Scenario):
@@ -40,5 +45,7 @@ class ScenarioEngine:
         results = {}
         for path in sorted(Path(directory).glob("*.json")):
             scenario = self.load(path)
+            if scenario.scenario_id in results:
+                raise ValueError(f"duplicate scenario_id: {scenario.scenario_id}")
             results[scenario.scenario_id] = self.analyse(scenario).to_dict()
         return results

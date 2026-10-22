@@ -9,6 +9,8 @@ from proxy.checkpoint import (
     REASON_R3_HIGH_IMPACT_THREAT_DENY,
     REASON_R3_HIGH_IMPACT_THREAT_HOLD,
     REASON_R4_MISSING_SIGNALS_HOLD,
+    REASON_R5_APPROVAL_REQUIRED_HOLD,
+    REASON_R6_SAFE_SUMMARY_ALLOW,
     REASON_R7_DEFAULT_HOLD,
     RULE_R1,
     RULE_R2,
@@ -20,7 +22,7 @@ from proxy.checkpoint import (
     decide,
     make_evidence_id,
 )
-from proxy.models import DENY, HOLD, Decision, DecisionSignals, ToolRequest
+from proxy.models import ALLOW, DENY, HOLD, Decision, DecisionSignals, ToolRequest
 from proxy.policy import POLICY_V1
 
 
@@ -102,14 +104,15 @@ class TestDecideSkeleton(unittest.TestCase):
             self.assertNotIn(arg, dec.reason)
 
 
-class TestEnforceRulesR1ToR4(unittest.TestCase):
-    """Test enforcement of rules R1 through R4."""
+class TestEnforceRulesR1ToR7(unittest.TestCase):
+    """Test enforcement of rules R1 through R7."""
 
     def setUp(self) -> None:
         self.signals_low = DecisionSignals(False, False, "low", 0.1, "ALLOW", "Low risk")
         self.signals_high = DecisionSignals(False, False, "high", 0.8, "DENY", "High risk")
         self.signals_inject = DecisionSignals(True, False, "low", 0.9, "DENY", "Injection")
         self.signals_drift = DecisionSignals(False, True, "low", 0.8, "DENY", "Goal drift")
+        self.signals_med = DecisionSignals(False, False, "medium", 0.5, "HOLD", "Medium risk")
 
     def test_r1_export_records_denied(self) -> None:
         req = ToolRequest("r1", "export_records", {"query": "all"}, "Export", "s1")
@@ -148,6 +151,31 @@ class TestEnforceRulesR1ToR4(unittest.TestCase):
         req = ToolRequest("r4-1", "send_email", {"recipient": "dean@example.edu"}, "Email", "s1")
         dec = decide(req, None)
         self.assertEqual((dec.decision, dec.rule_id, dec.reason), (HOLD, RULE_R4, REASON_R4_MISSING_SIGNALS_HOLD))
+
+    def test_r5_transfer_records_hold(self) -> None:
+        req = ToolRequest("r5-1", "transfer_records", {"destination": "dean@example.edu"}, "Transfer", "s1")
+        dec = decide(req, self.signals_low)
+        self.assertEqual((dec.decision, dec.rule_id, dec.reason), (HOLD, RULE_R5, REASON_R5_APPROVAL_REQUIRED_HOLD))
+
+    def test_r6_safe_summary_allowed(self) -> None:
+        req = ToolRequest("r6-1", "summarize_document", {"file": "synthetic_report.pdf"}, "Summarize", "s1")
+        dec = decide(req, self.signals_low)
+        self.assertEqual((dec.decision, dec.rule_id, dec.reason), (ALLOW, RULE_R6, REASON_R6_SAFE_SUMMARY_ALLOW))
+
+    def test_r6_summary_with_injection_hold(self) -> None:
+        req = ToolRequest("r6-2", "summarize_document", {"file": "synthetic_report.pdf"}, "Summarize", "s1")
+        dec = decide(req, self.signals_inject)
+        self.assertEqual((dec.decision, dec.rule_id, dec.reason), (HOLD, RULE_R7, REASON_R7_DEFAULT_HOLD))
+
+    def test_r6_summary_with_signals_none_hold(self) -> None:
+        req = ToolRequest("r6-3", "summarize_document", {"file": "synthetic_report.pdf"}, "Summarize", "s1")
+        dec = decide(req, None)
+        self.assertEqual((dec.decision, dec.rule_id, dec.reason), (HOLD, RULE_R7, REASON_R7_DEFAULT_HOLD))
+
+    def test_r6_summary_with_medium_risk_hold(self) -> None:
+        req = ToolRequest("r6-4", "summarize_document", {"file": "synthetic_report.pdf"}, "Summarize", "s1")
+        dec = decide(req, self.signals_med)
+        self.assertEqual((dec.decision, dec.rule_id, dec.reason), (HOLD, RULE_R7, REASON_R7_DEFAULT_HOLD))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from typing import Optional
 
 from core.contracts import POLICY_VERSION
 from proxy.canonical import canonical_json, sha256_hex
-from proxy.models import DENY, HOLD, Decision, DecisionSignals, ToolRequest
+from proxy.models import ALLOW, DENY, HOLD, Decision, DecisionSignals, ToolRequest
 from proxy.policy import (
     PolicyConfig,
     destination_of,
@@ -14,6 +14,7 @@ from proxy.policy import (
     is_allowed_tool,
     is_external_destination,
     is_high_impact,
+    is_safe_summary,
     requires_approval,
 )
 
@@ -132,7 +133,38 @@ def decide(
             rule_id=RULE_R4,
         )
 
-    # R7: Default fallback => HOLD
+    # R5: approval-required tool => HOLD
+    if requires_approval(request.tool, policy):
+        return Decision(
+            request_id=request.request_id,
+            decision=HOLD,
+            evidence_id=evidence_id,
+            reason=REASON_R5_APPROVAL_REQUIRED_HOLD,
+            policy_version=policy_version,
+            risk_signals=sig_dict,
+            rule_id=RULE_R5,
+        )
+
+    # R6: safe summary AND no injection AND no drift AND risk "low" => ALLOW
+    if (
+        is_safe_summary(request.arguments, policy)
+        and not is_high_impact(request.tool, policy)
+        and signals is not None
+        and not signals.prompt_injection
+        and not signals.goal_drift
+        and signals.sensitive_data_risk == "low"
+    ):
+        return Decision(
+            request_id=request.request_id,
+            decision=ALLOW,
+            evidence_id=evidence_id,
+            reason=REASON_R6_SAFE_SUMMARY_ALLOW,
+            policy_version=policy_version,
+            risk_signals=sig_dict,
+            rule_id=RULE_R6,
+        )
+
+    # R7: anything else (default fallback) => HOLD
     return Decision(
         request_id=request.request_id,
         decision=HOLD,

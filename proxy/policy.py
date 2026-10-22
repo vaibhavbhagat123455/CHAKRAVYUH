@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from core.contracts import POLICY_VERSION
 
@@ -74,3 +74,83 @@ def get_policy(version: str) -> PolicyConfig:
             f"Policy version '{version}' not found. Available versions: {sorted(POLICIES.keys())}"
         )
     return POLICIES[version]
+
+
+def is_allowed_tool(tool: str, policy: PolicyConfig) -> bool:
+    """Return True if tool is explicitly present in policy.allowed_tools."""
+    return bool(tool and tool in policy.allowed_tools)
+
+
+def is_high_impact(tool: str, policy: PolicyConfig) -> bool:
+    """Return True if tool is designated as high impact in policy.high_impact_tools."""
+    return bool(tool and tool in policy.high_impact_tools)
+
+
+def requires_approval(tool: str, policy: PolicyConfig) -> bool:
+    """Return True if tool requires human approval in policy.approval_required_tools."""
+    return bool(tool and tool in policy.approval_required_tools)
+
+
+def destination_of(arguments: Dict[str, Any], policy: PolicyConfig) -> Optional[str]:
+    """Extract destination argument based on ordered policy.destination_argument_keys."""
+    for key in policy.destination_argument_keys:
+        val = arguments.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
+def is_external_destination(destination: Optional[str], policy: PolicyConfig) -> bool:
+    """Determine whether destination targets an external/untrusted domain.
+
+    Edge cases:
+    - Missing destination (None or empty/whitespace) is NOT external (returns False).
+    - Destinations without '@' are evaluated directly against safe domains.
+    - Uppercase domains are normalized.
+    - Subdomain tricks like 'example.edu.evil.com' are recognized as external.
+    - Subdomains of safe domains (e.g. 'cs.example.edu') are recognized as internal.
+    """
+    if not destination or not destination.strip():
+        return False
+
+    dest = destination.strip()
+    if "@" in dest:
+        domain = dest.rsplit("@", 1)[1].strip().lower()
+    else:
+        domain = dest.lower()
+
+    if not domain:
+        return False
+
+    is_safe = any(
+        domain == safe.lower() or domain.endswith("." + safe.lower())
+        for safe in policy.safe_domains
+    )
+    return not is_safe
+
+
+def is_safe_summary(arguments: Dict[str, Any], policy: PolicyConfig) -> bool:
+    """Return True if summarize_document targets a safe public file with no sensitive category."""
+    target: Optional[str] = None
+    for key in ("file", "filename", "path", "document", "doc", "target"):
+        val = arguments.get(key)
+        if isinstance(val, str) and val.strip():
+            target = val.strip().replace("\\", "/").split("/")[-1].lower()
+            break
+
+    if not target:
+        return False
+
+    has_public_marker = any(target.startswith(m.lower()) for m in policy.public_file_markers)
+    if not has_public_marker:
+        return False
+
+    for cat in policy.sensitive_categories:
+        cat_lower = cat.lower()
+        if cat_lower in target:
+            return False
+        for val in arguments.values():
+            if isinstance(val, str) and cat_lower in val.lower():
+                return False
+
+    return True

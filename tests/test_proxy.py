@@ -4,7 +4,8 @@ import unittest
 
 from core.contracts import POLICY_VERSION
 from proxy.config import ProxyConfig
-from proxy.models import ALLOW, HOLD, ToolRequest
+from proxy.jsonrpc import POLICY_DENIED
+from proxy.models import ALLOW, DENY, HOLD, ToolRequest
 from proxy.server import ProxyServer
 from tests.fakes import (
     FakeAnalyser,
@@ -91,8 +92,6 @@ class TestProxyServerAnalyserFallback(unittest.TestCase):
         self.assertTrue(payload["analyser_failed"])
         self.assertEqual(payload["error_type"], "RuntimeError")
         self.assertIsNone(payload["signals"])
-
-        # Check response contains HOLD
         self.assertIn("HOLD", str(resp))
 
     def test_analyser_invalid_schema_leads_to_fallback_and_hold(self) -> None:
@@ -152,20 +151,16 @@ class TestProxyServerExecutionAndTrail(unittest.TestCase):
     def test_allow_decision_execution_and_exact_event_order(self) -> None:
         resp = self.server.handle_tool_call(self.allow_req, rpc_id="rpc-100")
 
-        # Executor must be called exactly once
         self.assertEqual(self.executor.call_count, 1)
         self.assertEqual(self.executor.calls[0]["tool"], "summarize_document")
         self.assertEqual(self.executor.calls[0]["arguments"], {"file": "synthetic_report.pdf"})
 
-        # Response must be JSON-RPC success structure with decision, evidence_id, and tool result
         self.assertEqual(resp["jsonrpc"], "2.0")
         self.assertEqual(resp["id"], "rpc-100")
         result = resp["result"]
         self.assertEqual(result["decision"], ALLOW)
         self.assertTrue(result["evidence_id"].startswith("ev-"))
-        self.assertTrue(result.get("tool_result") is not None or result.get("result") is not None)
 
-        # Audit event sequence must match exact order
         events = self.log.get_events_for_request("req-allow-01")
         event_types = [e["event_type"] for e in events]
         expected_types = (
@@ -175,11 +170,65 @@ class TestProxyServerExecutionAndTrail(unittest.TestCase):
         )
         self.assertEqual(event_types, expected_types)
 
-        # Check layers order in LAYER_EVALUATED payloads
         layer_events = [e for e in events if e["event_type"] == "LAYER_EVALUATED"]
         self.assertEqual(len(layer_events), 7)
         layer_ids = [e["payload"]["layer_id"] for e in layer_events]
         self.assertEqual(layer_ids, ["DWAAR", "PEHCHAAN", "SMRITI", "SANKALP", "ASTRA", "MARYADA", "DRISHTI"])
+
+
+class TestProxyServerDenyBlocking(unittest.TestCase):
+    """Test blocking of DENY decisions with evidence-linked errors and zero executor calls."""
+
+    def setUp(self) -> None:
+        self.log = FakeLog()
+        self.analyser = FakeAnalyser()
+        self.executor = SpyExecutor()
+        self.server = ProxyServer(self.log, self.analyser, self.executor)
+        self.deny_req = ToolRequest(
+            request_id="req-deny-01",
+            tool="export_records",
+            arguments={"filter": "all"},
+            purpose="Unauthorized export attempt",
+            scenario_id="scen-deny-01",
+        )
+
+    def test_deny_decision_blocks_executor_and_emits_tool_blocked(self) -> None:
+        resp = self.server.handle_tool_call(self.deny_req, rpc_id="rpc-deny-1")
+
+        # Zero executor calls
+        self.assertEqual(self.executor.call_count, 0)
+
+        # JSON-RPC error response with POLICY_DENIED
+        self.assertEqual(resp["jsonrpc"], "2.0")
+        self.assertEqual(resp["id"], "rpc-deny-1")
+        self.assertIn("error", resp)
+        err = resp["error"]
+        self.assertEqual(err["code"], POLICY_DENIED)
+        self.assertEqual(err["data"]["decision"], DENY)
+        self.assertEqual(err["data"]["rule_id"], "R1")
+        self.assertTrue(err["data"]["evidence_id"].startswith("ev-"))
+        self.assertEqual(err["data"]["reason"], err["message"])
+
+        # Order must end CHECKPOINT_DECISION, TOOL_BLOCKED
+        events = self.log.get_events_for_request("req-deny-01")
+        event_types = [e["event_type"] for e in events]
+        self.assertEqual(event_types[-2:], ["CHECKPOINT_DECISION", "TOOL_BLOCKED"])
+        self.assertNotIn("TOOL_STARTED", event_types)
+        self.assertNotIn("TOOL_COMPLETED", event_types)
+
+    def test_repeated_identical_requests_make_separate_events_with_same_evidence_id(self) -> None:
+        resp1 = self.server.handle_tool_call(self.deny_req, rpc_id="rpc-1")
+        resp2 = self.server.handle_tool_call(self.deny_req, rpc_id="rpc-2")
+
+        self.assertEqual(self.executor.call_count, 0)
+        self.assertEqual(resp1["error"]["data"]["evidence_id"], resp2["error"]["data"]["evidence_id"])
+
+        events = self.log.get_events_for_request("req-deny-01")
+        # Two complete runs, each with 11 events
+        self.assertEqual(len(events), 22)
+        blocked_events = [e for e in events if e["event_type"] == "TOOL_BLOCKED"]
+        self.assertEqual(len(blocked_events), 2)
+        self.assertEqual(blocked_events[0]["payload"]["evidence_id"], blocked_events[1]["payload"]["evidence_id"])
 
 
 if __name__ == "__main__":

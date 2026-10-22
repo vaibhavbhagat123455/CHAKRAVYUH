@@ -12,6 +12,7 @@ from proxy.events import (
     CHECKPOINT_DECISION,
     LAYER_EVALUATED,
     REQUEST_RECEIVED,
+    TOOL_BLOCKED,
     TOOL_COMPLETED,
     TOOL_STARTED,
     emit,
@@ -23,8 +24,8 @@ from proxy.interfaces import (
     LogWriter,
     ToolExecutor,
 )
-from proxy.jsonrpc import success_response
-from proxy.models import ALLOW, HOLD, DecisionSignals, ToolRequest
+from proxy.jsonrpc import POLICY_DENIED, error_response, success_response
+from proxy.models import ALLOW, DENY, HOLD, DecisionSignals, ToolRequest
 from proxy.policy import get_policy
 
 
@@ -55,6 +56,8 @@ class ProxyServer:
         rpc_id: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Handle incoming tool call attempt with full audit trail and guarded execution."""
+        effective_rpc_id = rpc_id if rpc_id is not None else request.request_id
+
         # 1. Initial request audit event
         emit(self.log, REQUEST_RECEIVED, request.request_id, request.to_dict())
 
@@ -113,8 +116,31 @@ class ProxyServer:
         }
         emit(self.log, CHECKPOINT_DECISION, request.request_id, decision_payload)
 
-        # 6. Execute ALLOW decisions
-        effective_rpc_id = rpc_id if rpc_id is not None else request.request_id
+        # 6. Block DENY decisions immediately
+        if decision.decision == DENY:
+            blocked_payload = {
+                "decision": decision.decision,
+                "evidence_id": decision.evidence_id,
+                "rule_id": decision.rule_id,
+                "reason": decision.reason,
+                "tool": request.tool,
+            }
+            emit(self.log, TOOL_BLOCKED, request.request_id, blocked_payload)
+
+            error_data = {
+                "evidence_id": decision.evidence_id,
+                "reason": decision.reason,
+                "decision": decision.decision,
+                "rule_id": decision.rule_id,
+            }
+            return error_response(
+                effective_rpc_id,
+                POLICY_DENIED,
+                decision.reason,
+                data=error_data,
+            )
+
+        # 7. Execute ALLOW decisions
         if decision.decision == ALLOW:
             emit(
                 self.log,
@@ -142,7 +168,7 @@ class ProxyServer:
                 },
             )
 
-        # Non-ALLOW response
+        # Non-ALLOW non-DENY response (e.g. HOLD placeholder for now)
         return {
             "decision": decision.decision,
             "evidence_id": decision.evidence_id,

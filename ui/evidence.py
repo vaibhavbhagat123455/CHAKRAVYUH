@@ -1,72 +1,79 @@
-"""Append-only dashboard evidence log with verifiable hash chaining and replay."""
+"""Dashboard evidence adapter backed by the canonical Member 1 log."""
 
 from __future__ import annotations
 
-import hashlib
 import json
-import threading
 from pathlib import Path
 from typing import Any
 
-from core.contracts import canonical_json
+from core.append_log import LogWriter, utc_now_iso
+from core.canonical import genesis_hash
+from core.contracts import POLICY_VERSION
+from core.replay import replay_log
+from core.verify import verify_log
 
-GENESIS = "0" * 64
-
-
-def _canonical(value: Any) -> str:
-    json.dumps(value, allow_nan=False)
-    return canonical_json(value)
+GENESIS = genesis_hash()
 
 
 class EvidenceLog:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        self._lock = threading.RLock()
+        self.writer = LogWriter(self.path)
 
     def append(self, event: dict[str, Any]) -> dict[str, Any]:
-        with self._lock:
-            prior = self.read_entries()
-            previous_hash = prior[-1]["current_hash"] if prior else GENESIS
-            record = {"sequence": len(prior) + 1, **event, "previous_hash": previous_hash}
-            record["current_hash"] = hashlib.sha256(_canonical(record).encode()).hexdigest()
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("ab") as stream:
-                stream.write((_canonical(record) + "\n").encode())
-            return record
+        if not isinstance(event, dict):
+            raise TypeError("event must be an object")
+        event_type = event.get("event_type")
+        request_id = event.get("request_id") or f"dashboard-{event.get('event_id', 'event')}"
+        known = {"event_id", "timestamp", "event_type", "request_id", "scenario_id", "decision", "evidence_id", "policy_version", "analyser_version"}
+        payload = {key: value for key, value in event.items() if key not in known}
+        timestamp = event.get("timestamp")
+        # ApprovalService uses an injectable epoch clock for expiry tests. The
+        # canonical security log stores UTC ISO timestamps, so convert that
+        # internal clock value at the adapter boundary.
+        if not isinstance(timestamp, str):
+            timestamp = utc_now_iso()
+        result = self.writer.append(
+            event_type,
+            request_id,
+            payload,
+            scenario_id=event.get("scenario_id"),
+            decision=event.get("decision"),
+            evidence_id=event.get("evidence_id"),
+            policy_version=event.get("policy_version") or (POLICY_VERSION if event.get("decision") else None),
+            analyser_version=event.get("analyser_version"),
+            event_id=event.get("event_id"),
+            timestamp=timestamp,
+        )
+        return result.to_dict()
 
     def read_entries(self) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
-        entries = []
-        with self.path.open("r", encoding="utf-8") as stream:
-            for line in stream:
-                entries.append(json.loads(line))
-        return entries
+        return [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     def verify(self) -> dict[str, Any]:
-        previous_hash = GENESIS
-        try:
-            with self.path.open("r", encoding="utf-8") as stream:
-                for line_number, line in enumerate(stream, 1):
-                    entry = json.loads(line)
-                    expected_sequence = line_number
-                    stored_hash = entry.get("current_hash")
-                    body = {key: value for key, value in entry.items() if key != "current_hash"}
-                    expected_hash = hashlib.sha256(_canonical(body).encode()).hexdigest()
-                    if entry.get("sequence") != expected_sequence or entry.get("previous_hash") != previous_hash or stored_hash != expected_hash:
-                        return {"valid": False, "line_number": line_number, "sequence": entry.get("sequence"),
-                                "event_id": entry.get("event_id"), "reason": "sequence, previous hash, or entry hash mismatch"}
-                    previous_hash = stored_hash
-        except FileNotFoundError:
-            return {"valid": True, "entries": 0, "head_hash": GENESIS}
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            return {"valid": False, "line_number": 1, "reason": "invalid JSONL or malformed event"}
-        return {"valid": True, "entries": line_number if 'line_number' in locals() else 0, "head_hash": previous_hash}
+        result = verify_log(self.path)
+        data = result.to_dict()
+        first = result.first_invalid
+        data["entries"] = result.entries_checked
+        if first:
+            data["line_number"] = first.line
+            data["event_id"] = self._event_id_at(first.line)
+            data["reason"] = first.message
+        return data
 
     def replay(self) -> dict[str, Any]:
+        result = replay_log(self.path, verify=True)
+        data = result.to_dict()
+        data["decisions"] = [
+            {"request_id": item["request_id"], "decision": item["replayed"], "evidence_id": item.get("evidence_id")}
+            for item in data.get("decisions", [])
+        ]
+        return data
+
+    def _event_id_at(self, line_number: int) -> str | None:
         entries = self.read_entries()
-        decisions = [{"request_id": e.get("request_id"), "decision": e.get("decision"),
-                      "evidence_id": e.get("evidence_id")} for e in entries
-                     if e.get("event_type") in {"SCENARIO_DECISION", "APPROVED_RELEASE"}]
-        digest = hashlib.sha256(_canonical(decisions).encode()).hexdigest()
-        return {"decisions": decisions, "decision_digest": digest}
+        if 0 < line_number <= len(entries):
+            return entries[line_number - 1].get("event_id")
+        return None

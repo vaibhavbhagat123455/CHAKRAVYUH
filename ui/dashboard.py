@@ -11,6 +11,9 @@ from urllib.parse import urlparse
 
 from approval.approval_codes import ApprovalService
 from approval.notification import ConfiguredNotificationAdapter, MockNotificationAdapter
+from proxy.checkpoint import Checkpoint
+from proxy.mcp_server import McpToolProxy
+from proxy.tool_executor import SimulatedToolExecutor
 from ui.evidence import EvidenceLog
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +48,9 @@ class DashboardState:
                  approval_log_path: str | Path | None = None) -> None:
         self.notifier = MockNotificationAdapter()
         self.scenarios: dict[str, dict] = {}
-        self.evidence = EvidenceLog(evidence_path or ROOT / "data" / "dashboard-events.jsonl")
+        self.evidence = EvidenceLog(evidence_path or ROOT / "data" / "security-log.jsonl")
+        self.executor = SimulatedToolExecutor()
+        self.proxy = McpToolProxy(Checkpoint(self.evidence.path), self.executor)
         ttl_seconds = int(os.getenv("APPROVAL_CODE_TTL_SECONDS", "180"))
         self.service = service or ApprovalService(self.notifier, ttl_seconds=ttl_seconds,
                                                  log_path=approval_log_path or ROOT / "data" / "approval-events.jsonl",
@@ -56,6 +61,7 @@ class DashboardState:
         scenario = self.scenarios.get(request.get("request_id"))
         if scenario is None or scenario.get("decision") != "HOLD":
             return "held request unavailable"
+        self.proxy.release_held(request["request_id"], approval_verified=True)
         scenario["approval_status"] = "APPROVED"
         scenario["decision"] = "ALLOW"
         event = self.evidence.append({"event_id": f"evt-{secrets.token_hex(8)}", "event_type": "APPROVED_RELEASE",
@@ -71,7 +77,20 @@ class DashboardState:
             raise ValueError("Unknown scenario. Choose one of the listed synthetic fixtures.")
         scenario = json.loads(path.read_text(encoding="utf-8"))
         scenario["scenario_id"] = scenario_id
-        if scenario["decision"] == "HOLD":
+        rpc_payload = {
+            "jsonrpc": "2.0", "id": f"dashboard-{scenario_id}", "method": "tools/call",
+            "params": {"request": scenario["request"], "content": scenario.get("content", "")},
+        }
+        response = self.proxy.handle(rpc_payload)
+        decision = self.proxy.checkpoint.decisions[scenario["request"]["request_id"]]
+        scenario["decision"] = decision.decision
+        scenario["reason"] = decision.reason
+        scenario["evidence_id"] = decision.evidence_id
+        scenario["layers"] = [
+            {"layer_id": item.layer_id, "status": {"BLOCK": "DENY", "REVIEW": "REVIEW"}.get(item.status, item.status), "reason": item.reason}
+            for item in decision.layer_results
+        ]
+        if decision.decision == "HOLD":
             if os.getenv("APPROVAL_CHANNEL") in {"email", "telegram"}:
                 channel = os.environ["APPROVAL_CHANNEL"]
                 notifier = ConfiguredNotificationAdapter(channel)
@@ -85,14 +104,11 @@ class DashboardState:
             scenario["approval_id"] = approval["approval_id"]
             scenario["approval_status"] = approval["status"]
             scenario["masked_destination"] = approval["destination"]
-        event = {"event_id": f"evt-{secrets.token_hex(8)}", "event_type": "SCENARIO_DECISION",
-                 "timestamp": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
-                 "request_id": scenario["request"]["request_id"], "decision": scenario["decision"],
-                 "evidence_id": f"ev-{secrets.token_hex(8)}", "scenario_id": scenario_id,
-                 "reason": scenario["reason"], "request": scenario["request"]}
-        event = self.evidence.append(event)
-        scenario["evidence_id"] = event["evidence_id"]
-        scenario["log_sequence"] = event["sequence"]
+        if "error" in response:
+            scenario["error"] = response["error"]
+        entries = self.evidence.read_entries()
+        decision_events = [e for e in entries if e.get("event_type") == "CHECKPOINT_DECISION" and e.get("request_id") == scenario["request"]["request_id"]]
+        scenario["log_sequence"] = decision_events[-1]["sequence"] if decision_events else None
         self.scenarios[scenario["request"]["request_id"]] = scenario
         return scenario
 

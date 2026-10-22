@@ -1,4 +1,4 @@
-"""Tests for PendingStore, PendingRecord, and HOLD creation flows."""
+"""Tests for PendingStore, PendingRecord, HOLD creation, and expiry handling."""
 
 import unittest
 
@@ -44,9 +44,15 @@ class TestPendingStoreBasic(unittest.TestCase):
         self.assertEqual(record.expires_at, 1090.0)
         self.assertEqual(record.action_digest, expected_digest)
         self.assertEqual(record.approval_id, "appr-req-store-01")
+        self.assertEqual(self.store.get("req-store-01"), record)
 
-        fetched = self.store.get("req-store-01")
-        self.assertEqual(fetched, record)
+    def test_store_expiry_methods(self) -> None:
+        self.store.add(self.request, "ev-1", None, "appr-1")
+        self.clock.advance(100.0)
+        expired = self.store.expire_due()
+        self.assertEqual(len(expired), 1)
+        self.assertEqual(expired[0].request.request_id, "req-store-01")
+        self.assertIsNone(self.store.get("req-store-01"))
 
 
 class TestHoldCreationInServer(unittest.TestCase):
@@ -55,40 +61,28 @@ class TestHoldCreationInServer(unittest.TestCase):
     def setUp(self) -> None:
         self.log = FakeLog()
         self.analyser = FakeAnalyser(default_result={
-            "prompt_injection": False,
-            "goal_drift": False,
-            "sensitive_data_risk": "low",
-            "risk_score": 0.05,
-            "recommended_action": "ALLOW",
-            "reason": "Low risk analysis",
+            "prompt_injection": False, "goal_drift": False,
+            "sensitive_data_risk": "low", "risk_score": 0.05,
+            "recommended_action": "ALLOW", "reason": "Low risk analysis",
         })
         self.executor = SpyExecutor()
         self.approval = FakeApprovalService()
         self.clock = FakeClock(start_time=2000.0)
-        self.config = ProxyConfig(hold_ttl_seconds=120)
         self.server = ProxyServer(
-            log=self.log,
-            analyser=self.analyser,
-            executor=self.executor,
-            approval=self.approval,
-            config=self.config,
-            clock=self.clock,
+            log=self.log, analyser=self.analyser, executor=self.executor,
+            approval=self.approval, config=ProxyConfig(hold_ttl_seconds=120), clock=self.clock,
         )
 
     def test_held_transfer_records_and_independent_safe_summary_in_one_run(self) -> None:
         trans_req = ToolRequest(
-            request_id="req-trans-01",
-            tool="transfer_records",
+            request_id="req-trans-01", tool="transfer_records",
             arguments={"destination": "archive@college.example"},
-            purpose="Hold transfer",
-            scenario_id="scen-01",
+            purpose="Hold transfer", scenario_id="scen-01",
         )
         sum_req = ToolRequest(
-            request_id="req-sum-02",
-            tool="summarize_document",
+            request_id="req-sum-02", tool="summarize_document",
             arguments={"file": "synthetic_report.pdf"},
-            purpose="Safe summary",
-            scenario_id="scen-02",
+            purpose="Safe summary", scenario_id="scen-02",
         )
 
         resp_trans = self.server.handle_tool_call(trans_req)
@@ -120,31 +114,21 @@ class TestReleasePendingInServer(unittest.TestCase):
     def setUp(self) -> None:
         self.log = FakeLog()
         self.analyser = FakeAnalyser(default_result={
-            "prompt_injection": False,
-            "goal_drift": False,
-            "sensitive_data_risk": "low",
-            "risk_score": 0.05,
-            "recommended_action": "ALLOW",
-            "reason": "Safe analysis",
+            "prompt_injection": False, "goal_drift": False,
+            "sensitive_data_risk": "low", "risk_score": 0.05,
+            "recommended_action": "ALLOW", "reason": "Safe analysis",
         })
         self.executor = SpyExecutor()
         self.approval = FakeApprovalService()
         self.clock = FakeClock(start_time=3000.0)
-        self.config = ProxyConfig(hold_ttl_seconds=100)
         self.server = ProxyServer(
-            log=self.log,
-            analyser=self.analyser,
-            executor=self.executor,
-            approval=self.approval,
-            config=self.config,
-            clock=self.clock,
+            log=self.log, analyser=self.analyser, executor=self.executor,
+            approval=self.approval, config=ProxyConfig(hold_ttl_seconds=100), clock=self.clock,
         )
         self.request = ToolRequest(
-            request_id="req-rel-01",
-            tool="transfer_records",
+            request_id="req-rel-01", tool="transfer_records",
             arguments={"destination": "archive@college.example"},
-            purpose="Transfer records",
-            scenario_id="scen-rel-01",
+            purpose="Transfer records", scenario_id="scen-rel-01",
         )
         self.server.handle_tool_call(self.request)
 
@@ -164,10 +148,8 @@ class TestReleasePendingInServer(unittest.TestCase):
     def test_approval_for_send_email_cannot_release_transfer_records(self) -> None:
         email_digest = action_digest("send_email", {"to": "alice@college.example", "body": "hi"})
         mismatched_appr = ApprovalResult(
-            approved=True,
-            approval_id="appr-req-rel-01",
-            action_digest=email_digest,
-            reason="Wrong tool approved",
+            approved=True, approval_id="appr-req-rel-01",
+            action_digest=email_digest, reason="Wrong tool approved",
         )
         resp = self.server.release_pending("req-rel-01", mismatched_appr)
         self.assertIn("error", resp)
@@ -205,6 +187,57 @@ class TestReleasePendingInServer(unittest.TestCase):
         exp_events = [e for e in events if e.get("payload", {}).get("subtype") == "HOLD_EXPIRED"]
         self.assertEqual(len(exp_events), 1)
         self.assertEqual(exp_events[0]["payload"]["outcome"], "expired")
+
+
+class TestExpiryHandlingInServer(unittest.TestCase):
+    """Test expiry handling using FakeClock."""
+
+    def setUp(self) -> None:
+        self.log = FakeLog()
+        self.analyser = FakeAnalyser(default_result={
+            "prompt_injection": False, "goal_drift": False,
+            "sensitive_data_risk": "low", "risk_score": 0.05,
+            "recommended_action": "ALLOW", "reason": "Safe",
+        })
+        self.clock = FakeClock(start_time=1000.0)
+        self.server = ProxyServer(
+            log=self.log, analyser=self.analyser, executor=SpyExecutor(),
+            approval=FakeApprovalService(), config=ProxyConfig(hold_ttl_seconds=60),
+            clock=self.clock,
+        )
+
+    def test_expire_pending_removes_and_emits(self) -> None:
+        req = ToolRequest("req-exp-1", "transfer_records", {"destination": "a@b.com"}, "test", "scen")
+        self.server.handle_tool_call(req)
+        self.assertIsNotNone(self.server.pending_store.get("req-exp-1"))
+
+        rec = self.server.expire_pending("req-exp-1")
+        self.assertIsNotNone(rec)
+        self.assertIsNone(self.server.pending_store.get("req-exp-1"))
+        events = self.log.get_events_for_request("req-exp-1")
+        exp_ev = [e for e in events if e.get("payload", {}).get("subtype") == "HOLD_EXPIRED"]
+        self.assertEqual(len(exp_ev), 1)
+        self.assertEqual(exp_ev[0]["payload"]["outcome"], "expired")
+        self.assertIsNone(self.server.expire_pending("req-exp-1"))
+
+    def test_expire_due_removes_only_overdue_records(self) -> None:
+        req1 = ToolRequest("req-due-1", "transfer_records", {"destination": "a@b.com"}, "t1", "scen")
+        self.server.handle_tool_call(req1)
+
+        self.clock.advance(30.0)  # t = 1030
+        req2 = ToolRequest("req-due-2", "transfer_records", {"destination": "c@d.com"}, "t2", "scen")
+        self.server.handle_tool_call(req2)  # expires at 1090
+
+        self.clock.advance(35.0)  # t = 1065 (req1 expired at 1060, req2 expires at 1090)
+        expired = self.server.expire_due()
+        self.assertEqual([r.request.request_id for r in expired], ["req-due-1"])
+        self.assertIsNone(self.server.pending_store.get("req-due-1"))
+        self.assertIsNotNone(self.server.pending_store.get("req-due-2"))
+
+        self.clock.advance(30.0)  # t = 1095 (req2 now expired)
+        expired2 = self.server.expire_due()
+        self.assertEqual([r.request.request_id for r in expired2], ["req-due-2"])
+        self.assertIsNone(self.server.pending_store.get("req-due-2"))
 
 
 if __name__ == "__main__":

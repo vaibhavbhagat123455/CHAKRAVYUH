@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from core.contracts import POLICY_VERSION
 from proxy.canonical import action_digest
@@ -33,7 +33,7 @@ from proxy.interfaces import (
 )
 from proxy.jsonrpc import POLICY_DENIED, TOOL_FAILED, error_response, success_response
 from proxy.models import ALLOW, DENY, HOLD, ApprovalResult, DecisionSignals, ToolRequest
-from proxy.pending import PendingStore
+from proxy.pending import PendingRecord, PendingStore
 from proxy.policy import get_policy
 
 
@@ -107,31 +107,18 @@ class ProxyServer:
         emit(self.log, REQUEST_RECEIVED, request.request_id, request.to_dict())
 
         signals: Optional[DecisionSignals] = None
-        analyser_failed = False
-        error_type: Optional[str] = None
-        model_version: Optional[str] = None
-
+        analysis_payload: Dict[str, Any] = {"analyser_failed": False}
         try:
-            raw_analysis = self.analyser.analyse_tool_call(request.to_dict(), request.purpose)
-            if not isinstance(raw_analysis, dict):
-                raise ValueError(f"Analyser output must be a dict, got: {type(raw_analysis).__name__}")
-            model_version = raw_analysis.get("model_version")
-            clean_data = dict(raw_analysis)
-            clean_data.pop("model_version", None)
-            signals = DecisionSignals.from_dict(clean_data)
+            raw = self.analyser.analyse_tool_call(request.to_dict(), request.purpose)
+            if not isinstance(raw, dict):
+                raise ValueError("Analyser output must be a dict")
+            clean = {k: v for k, v in raw.items() if k != "model_version"}
+            signals = DecisionSignals.from_dict(clean)
+            analysis_payload["signals"] = signals.to_dict()
+            if "model_version" in raw:
+                analysis_payload["model_version"] = raw["model_version"]
         except Exception as exc:
-            analyser_failed = True
-            error_type = type(exc).__name__
-            signals = None
-
-        analysis_payload: Dict[str, Any] = {
-            "analyser_failed": analyser_failed,
-            "signals": signals.to_dict() if signals is not None else None,
-        }
-        if analyser_failed:
-            analysis_payload["error_type"] = error_type
-        if model_version is not None:
-            analysis_payload["model_version"] = model_version
+            analysis_payload.update({"analyser_failed": True, "signals": None, "error_type": type(exc).__name__})
         emit(self.log, ANALYSIS_RECORDED, request.request_id, analysis_payload)
 
         decision = decide(request, signals, policy_version=self.policy_version, policy=self.policy)
@@ -204,11 +191,7 @@ class ProxyServer:
 
         now = self.clock.now() if self.clock is not None else time.time()
         if now > record.expires_at:
-            self.pending_store.remove(request_id)
-            emit(self.log, HOLD_EXPIRED, request_id, {
-                "outcome": "expired", "evidence_id": record.evidence_id,
-                "reason": "Pending request expired",
-            })
+            self.expire_pending(request_id)
             return error_response(request_id, POLICY_DENIED, "Pending request expired")
 
         computed_digest = action_digest(record.request.tool, record.request.arguments)
@@ -230,15 +213,32 @@ class ProxyServer:
             return error_response(request_id, POLICY_DENIED, decision.reason, data={"evidence_id": decision.evidence_id})
 
         emit(self.log, HOLD_RELEASED, request_id, {
-            "approval_id": approval_result.approval_id,
-            "evidence_id": record.evidence_id,
+            "approval_id": approval_result.approval_id, "evidence_id": record.evidence_id,
             "action_digest": record.action_digest,
         })
         self.pending_store.remove(request_id)
         return self._execute_and_contain(
-            request_id=request_id,
-            tool=record.request.tool,
-            arguments=record.request.arguments,
-            evidence_id=record.evidence_id,
-            rpc_id=request_id,
+            request_id, record.request.tool, record.request.arguments, record.evidence_id, request_id
         )
+
+    def expire_pending(self, request_id: str) -> Optional[PendingRecord]:
+        """Expire a pending request by ID, remove it, and emit HOLD_EXPIRED."""
+        record = self.pending_store.remove(request_id)
+        if record is None:
+            return None
+        emit(self.log, HOLD_EXPIRED, request_id, {
+            "outcome": "expired", "evidence_id": record.evidence_id,
+            "reason": "Pending request expired", "tool": record.request.tool,
+        })
+        return record
+
+    def expire_due(self) -> List[PendingRecord]:
+        """Expire all due pending requests using clock, emit HOLD_EXPIRED, and return them."""
+        now = self.clock.now() if self.clock is not None else time.time()
+        expired: List[PendingRecord] = []
+        for record in self.pending_store.list_all():
+            if now >= record.expires_at:
+                exp = self.expire_pending(record.request.request_id)
+                if exp is not None:
+                    expired.append(exp)
+        return expired

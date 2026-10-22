@@ -81,3 +81,14 @@ class PendingStore:
         """List snapshot of all currently stored pending records."""
         with self._lock:
             return list(self._records.values())
+
+    def expire_pending(self, request_id: str) -> Optional[PendingRecord]:
+        """Remove and return pending record by request_id."""
+        return self.remove(request_id)
+
+    def expire_due(self, now: Optional[float] = None) -> List[PendingRecord]:
+        """Remove and return all overdue pending records based on clock."""
+        current_time = now if now is not None else self._now()
+        with self._lock:
+            due_ids = [rid for rid, r in self._records.items() if current_time >= r.expires_at]
+            return [self._records.pop(rid) for rid in due_ids]

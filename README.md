@@ -1,8 +1,8 @@
 # AI Chakravyuh - AI Tool-Call Checkpoint
 
-AI Chakravyuh is a synthetic security checkpoint for AI-agent tool use. The AI interprets untrusted content; a deterministic policy checkpoint decides; an append-only hash-chained log proves what happened.
-
-This repository currently contains the shared foundation and the Member 1 log/replay module. AI analysis, MCP proxy, approval and UI modules are integrated through the contracts in `docs/contracts.md`.
+AI Chakravyuh is a synthetic security checkpoint for AI-agent tool use. The
+AI interprets untrusted content; deterministic policy code decides; an
+append-only hash-chained log proves what happened.
 
 ## Safety boundary
 
@@ -19,58 +19,37 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Run tests
+## Run all tests
 
 ```powershell
 python -m pytest -q
 ```
 
-Stdlib fallback for the Member 1 suite:
+Stdlib fallback when pytest is unavailable:
 
 ```powershell
-python -m unittest tests.test_log tests.test_policy tests.test_replay tests.test_cli tests.test_contracts -v
+python -m unittest discover -s tests -v
 ```
 
-Zero-dependency fallback for the Member 3 checks once merged:
+## Run AI scenario analysis
 
 ```powershell
+python -m ai.run_scenarios scenarios
+python -m ai.run_scenarios scenarios/malicious_pdf.json
 python validate_member3.py
 ```
 
-## Member 1 commands
+Expected recommendations are `DENY` for the malicious PDF, `ALLOW` for the
+safe summary and `HOLD` for the confidential report. AI signals are advisory;
+the MCP checkpoint remains the final execution authority.
 
-Verify a security log:
-
-```powershell
-python -m core.verify data/security_log.jsonl
-```
-
-Replay recorded checkpoint decisions:
-
-```powershell
-python -m core.replay data/security_log.jsonl --output replay.json
-```
-
-Verify and replay the deterministic demo fixture:
+## Verify and replay the log
 
 ```powershell
 python -m core.verify data/fixtures/original_log.jsonl
 python -m core.replay data/fixtures/original_log.jsonl --expected data/fixtures/expected_decisions.json
-```
-
-Regenerate all Member 1 fixtures:
-
-```powershell
-python scripts/build_member1_fixtures.py
-```
-
-Generate the tamper and replay proof for the jury:
-
-```powershell
 python scripts/demo_member1.py
 ```
-
-This writes valid, tampered and replay reports to `docs/demo-evidence/`.
 
 ## Demo expectations
 
@@ -80,11 +59,12 @@ This writes valid, tampered and replay reports to `docs/demo-evidence/`.
 | `safe-summary-001` | `ALLOW` |
 | `approval-transfer-001` | `HOLD` |
 
-## Useful documents
+## Team modules
 
-- `docs/MEMBER1_IMPLEMENTATION_PLAN.md`
-- `docs/TEAM_CONTRACTS.md`
-- `docs/contracts.md`
-- `docs/architecture.md`
-- `docs/demo-evidence/README.md`
-- `core/README.md`
+- Member 1: append-only log, verification, replay and policy engine.
+- Member 2: MCP JSON-RPC-over-stdio proxy and tool-call checkpoint.
+- Member 3: AI threat analysis and scenario engine.
+- Member 4: exact one-time approval and dashboard.
+
+All cross-module conventions are documented in `docs/TEAM_CONTRACTS.md` and
+`docs/contracts.md`.

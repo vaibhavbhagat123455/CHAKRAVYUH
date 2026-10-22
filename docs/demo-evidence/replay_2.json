@@ -1,0 +1,37 @@
+{
+  "decision_digest": "sha256:a8a98ac5ca57c9428a3b2139ad55e4867bd3d1feb8f36b676ba37c5879793da5",
+  "decisions": [
+    {
+      "evidence_id": "ev-8354b9d48b1a2c0c",
+      "evidence_id_match": true,
+      "expected": "DENY",
+      "match": true,
+      "recorded": "DENY",
+      "replayed": "DENY",
+      "request_id": "req-malicious-001"
+    },
+    {
+      "evidence_id": "ev-836751f902517a9c",
+      "evidence_id_match": true,
+      "expected": "ALLOW",
+      "match": true,
+      "recorded": "ALLOW",
+      "replayed": "ALLOW",
+      "request_id": "req-safe-001"
+    },
+    {
+      "evidence_id": "ev-b52a77868cf39149",
+      "evidence_id_match": true,
+      "expected": "HOLD",
+      "match": true,
+      "recorded": "HOLD",
+      "replayed": "HOLD",
+      "request_id": "req-approval-001"
+    }
+  ],
+  "events_replayed": 3,
+  "log_verified": true,
+  "mismatches": [],
+  "policy_version": "v1",
+  "valid": true
+}

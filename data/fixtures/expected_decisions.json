@@ -1,0 +1,5 @@
+{
+  "req-approval-001": "HOLD",
+  "req-malicious-001": "DENY",
+  "req-safe-001": "ALLOW"
+}

@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run test suite
+        run: python -m pytest -q
+
+      - name: Run Member 3 fallback validation when present
+        run: |
+          if [ -f validate_member3.py ]; then
+            python validate_member3.py
+          fi
+
+      - name: Verify demo log
+        run: python -m core.verify data/fixtures/original_log.jsonl
+
+      - name: Replay demo log twice
+        run: |
+          python -m core.replay data/fixtures/original_log.jsonl --output replay.json
+          python -m core.replay data/fixtures/original_log.jsonl --output replay-2.json
+          diff -u replay.json replay-2.json
+
+      - name: Upload replay evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-${{ matrix.python-version }}
+          path: |
+            replay.json
+            replay-2.json

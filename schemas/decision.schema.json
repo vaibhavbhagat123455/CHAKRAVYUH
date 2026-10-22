@@ -9,6 +9,45 @@
     "decision": {"enum": ["ALLOW", "HOLD", "DENY"]},
     "evidence_id": {"type": "string", "minLength": 1},
     "reason": {"type": "string", "minLength": 1},
-    "policy_version": {"type": "string", "minLength": 1}
+    "policy_version": {"type": "string", "minLength": 1},
+    "signals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prompt_injection",
+        "goal_drift",
+        "sensitive_data_risk",
+        "risk_score",
+        "recommended_action",
+        "reason"
+      ],
+      "properties": {
+        "prompt_injection": {"type": "boolean"},
+        "goal_drift": {"type": "boolean"},
+        "sensitive_data_risk": {"enum": ["low", "medium", "high"]},
+        "risk_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "recommended_action": {"enum": ["ALLOW", "HOLD", "DENY"]},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "analyser_version": {"type": "string", "minLength": 1}
+      }
+    },
+    "policy_facts": {"type": "object"},
+    "layer_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["layer_id", "status", "reason", "evidence_id"],
+        "properties": {
+          "layer_id": {
+            "enum": ["DWAAR", "PEHCHAAN", "SMRITI", "SANKALP", "ASTRA", "MARYADA", "DRISHTI"]
+          },
+          "status": {"enum": ["PASS", "REVIEW", "BLOCK", "SKIP"]},
+          "reason": {"type": "string", "minLength": 1},
+          "evidence_id": {"type": "string", "minLength": 1}
+        }
+      }
+    }
   }
 }

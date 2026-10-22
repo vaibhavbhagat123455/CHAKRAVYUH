@@ -1,0 +1,18 @@
+{
+  "decision_digest": "sha256:a8a98ac5ca57c9428a3b2139ad55e4867bd3d1feb8f36b676ba37c5879793da5",
+  "original_entries": 41,
+  "original_valid": true,
+  "replay_digests_match": true,
+  "replay_events": 3,
+  "replay_valid": true,
+  "tampered_first_invalid": {
+    "actual": "0ac9a985eeb0e66de58fdd731b3b053ff176095ace8138cc3b9ff43c16ba6e83",
+    "code": "ENTRY_HASH_MISMATCH",
+    "event_id": "evt-000002",
+    "expected": "c5e57221c59edf4364e3bdd8f992e97c81b409a577e59c462192a502d343926f",
+    "line": 2,
+    "message": "entry_hash does not match the canonical event",
+    "sequence": 2
+  },
+  "tampered_valid": false
+}

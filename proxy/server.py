@@ -15,6 +15,7 @@ from proxy.events import (
     TOOL_BLOCKED,
     TOOL_COMPLETED,
     TOOL_STARTED,
+    TOOL_TIMEOUT,
     emit,
 )
 from proxy.interfaces import (
@@ -24,7 +25,7 @@ from proxy.interfaces import (
     LogWriter,
     ToolExecutor,
 )
-from proxy.jsonrpc import POLICY_DENIED, error_response, success_response
+from proxy.jsonrpc import POLICY_DENIED, TOOL_FAILED, error_response, success_response
 from proxy.models import ALLOW, DENY, HOLD, DecisionSignals, ToolRequest
 from proxy.policy import get_policy
 
@@ -140,7 +141,7 @@ class ProxyServer:
                 data=error_data,
             )
 
-        # 7. Execute ALLOW decisions
+        # 7. Execute ALLOW decisions with containment
         if decision.decision == ALLOW:
             emit(
                 self.log,
@@ -149,7 +150,22 @@ class ProxyServer:
                 {"tool": request.tool, "arguments": request.arguments, "evidence_id": decision.evidence_id},
             )
 
-            tool_result = self.executor.execute(request.tool, request.arguments)
+            try:
+                tool_result = self.executor.execute(request.tool, request.arguments)
+            except Exception as exc:
+                containment_payload = {
+                    "tool": request.tool,
+                    "evidence_id": decision.evidence_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+                emit(self.log, TOOL_TIMEOUT, request.request_id, containment_payload)
+                return error_response(
+                    effective_rpc_id,
+                    TOOL_FAILED,
+                    f"Tool execution failed: {exc}",
+                    data={"evidence_id": decision.evidence_id, "error_type": type(exc).__name__},
+                )
 
             emit(
                 self.log,

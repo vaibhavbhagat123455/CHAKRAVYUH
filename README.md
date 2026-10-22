@@ -4,13 +4,6 @@ AI Chakravyuh is a synthetic security checkpoint for AI-agent tool use. The
 AI interprets untrusted content; deterministic policy code decides; an
 append-only hash-chained log proves what happened.
 
-## Safety boundary
-
-- All data, recipients, filenames and tool results are synthetic.
-- The tool executor is simulated.
-- No real email, database, file export or external transfer is implemented.
-- Prompt-injected content is treated as untrusted data and is never executed.
-
 ## Setup
 
 ```powershell
@@ -25,33 +18,31 @@ pip install -r requirements.txt
 python -m pytest -q
 ```
 
-Stdlib fallback when pytest is unavailable:
+Stdlib fallback: `python -m unittest discover -s tests -v`.
+
+## Run the full local demo
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m ui.dashboard
 ```
 
-## Run AI scenario analysis
+Open `http://127.0.0.1:8765`. The demo uses synthetic fixtures and simulated
+tools only. Run safe summary, malicious PDF and approval transfer. The
+approval code is delivered through the configured mock/out-of-band adapter and
+never returned by the browser endpoint.
+
+## Run individual verification commands
 
 ```powershell
 python -m ai.run_scenarios scenarios
-python -m ai.run_scenarios scenarios/malicious_pdf.json
 python validate_member3.py
-```
-
-Expected recommendations are `DENY` for the malicious PDF, `ALLOW` for the
-safe summary and `HOLD` for the confidential report. AI signals are advisory;
-the MCP checkpoint remains the final execution authority.
-
-## Verify and replay the log
-
-```powershell
 python -m core.verify data/fixtures/original_log.jsonl
 python -m core.replay data/fixtures/original_log.jsonl --expected data/fixtures/expected_decisions.json
 python scripts/demo_member1.py
+python -m approval.test_flow
 ```
 
-## Demo expectations
+## Expected scenarios
 
 | Scenario | Expected decision |
 |---|---|

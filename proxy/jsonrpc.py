@@ -14,6 +14,17 @@ INTERNAL_ERROR = -32603
 POLICY_DENIED = -32003
 TOOL_FAILED = -32004
 
+# Only tools/call is supported at this gateway boundary
+SUPPORTED_METHODS = frozenset({"tools/call"})
+
+_TOOL_CALL_PARAM_KEYS = frozenset({
+    "request_id",
+    "tool",
+    "arguments",
+    "purpose",
+    "scenario_id",
+})
+
 
 class RpcError(Exception):
     """Exception carrying JSON-RPC error fields."""
@@ -107,3 +118,55 @@ def validate_envelope(raw: Any) -> None:
     method = raw.get("method")
     if not isinstance(method, str):
         raise RpcError(INVALID_REQUEST, "Invalid Request: 'method' must be a string", rpc_id=rpc_id)
+
+
+def validate_method(method: str, rpc_id: Optional[Any] = None) -> None:
+    """Validate that the method is in SUPPORTED_METHODS.
+
+    Raises RpcError(METHOD_NOT_FOUND) if method is unsupported.
+    """
+    if method not in SUPPORTED_METHODS:
+        raise RpcError(
+            METHOD_NOT_FOUND,
+            f"Method '{method}' not found. Supported methods: {sorted(SUPPORTED_METHODS)}",
+            rpc_id=rpc_id,
+        )
+
+
+def validate_tool_call_params(params: Any, rpc_id: Optional[Any] = None) -> None:
+    """Validate tool-call params.
+
+    Requires params to be an object with keys exactly matching:
+    request_id, tool, arguments, purpose, scenario_id.
+    arguments must be an object (dict).
+    Raises RpcError(INVALID_PARAMS) on any violation.
+    """
+    if not isinstance(params, dict):
+        raise RpcError(INVALID_PARAMS, "params must be an object", rpc_id=rpc_id)
+
+    # Missing keys
+    for key in ("request_id", "tool", "arguments", "purpose", "scenario_id"):
+        if key not in params:
+            raise RpcError(
+                INVALID_PARAMS,
+                f"Missing required parameter '{key}' in params",
+                rpc_id=rpc_id,
+            )
+
+    # Unknown keys
+    unknown = set(params.keys()) - _TOOL_CALL_PARAM_KEYS
+    if unknown:
+        raise RpcError(
+            INVALID_PARAMS,
+            f"Unknown parameter(s) in params: {sorted(unknown)}",
+            rpc_id=rpc_id,
+        )
+
+    # arguments must be an object
+    args = params["arguments"]
+    if not isinstance(args, dict):
+        raise RpcError(
+            INVALID_PARAMS,
+            f"Parameter 'arguments' must be an object (dict), got: {type(args).__name__}",
+            rpc_id=rpc_id,
+        )

@@ -9,12 +9,15 @@ from proxy.jsonrpc import (
     METHOD_NOT_FOUND,
     PARSE_ERROR,
     POLICY_DENIED,
+    SUPPORTED_METHODS,
     TOOL_FAILED,
     RpcError,
     error_response,
     parse_request,
     success_response,
     validate_envelope,
+    validate_method,
+    validate_tool_call_params,
 )
 
 
@@ -115,7 +118,6 @@ class TestJsonRpcParsingAndEnvelope(unittest.TestCase):
 
     def test_validate_envelope_success(self) -> None:
         valid = {"jsonrpc": "2.0", "id": "req-1", "method": "tools/call"}
-        # Must not raise
         validate_envelope(valid)
 
     def test_validate_envelope_echoes_id_on_failure(self) -> None:
@@ -155,6 +157,73 @@ class TestJsonRpcParsingAndEnvelope(unittest.TestCase):
             validate_envelope([1, 2, 3])
         self.assertEqual(ctx.exception.code, INVALID_REQUEST)
         self.assertIsNone(ctx.exception.rpc_id)
+
+
+class TestJsonRpcMethodsAndParams(unittest.TestCase):
+    """Test method restriction and tool-call params validation."""
+
+    def setUp(self) -> None:
+        self.valid_params = {
+            "request_id": "req-001",
+            "tool": "summarize_document",
+            "arguments": {"file": "notice.pdf"},
+            "purpose": "Summarize student council notice",
+            "scenario_id": "safe-01",
+        }
+
+    def test_supported_methods_defined_once(self) -> None:
+        self.assertEqual(SUPPORTED_METHODS, frozenset({"tools/call"}))
+
+    def test_unknown_method_raises_method_not_found(self) -> None:
+        for bad_method in ("tools/list", "call_tool", "execute", "tools/call_unknown"):
+            with self.assertRaises(RpcError) as ctx:
+                validate_method(bad_method, rpc_id="id-10")
+            self.assertEqual(ctx.exception.code, METHOD_NOT_FOUND)
+            self.assertEqual(ctx.exception.rpc_id, "id-10")
+            self.assertIn(bad_method, ctx.exception.message)
+
+    def test_valid_method_passes(self) -> None:
+        validate_method("tools/call", rpc_id="id-10")
+
+    def test_params_not_object_raises_invalid_params(self) -> None:
+        for bad_params in (None, [1, 2], "arguments", 42):
+            with self.assertRaises(RpcError) as ctx:
+                validate_tool_call_params(bad_params, rpc_id="id-20")
+            self.assertEqual(ctx.exception.code, INVALID_PARAMS)
+            self.assertEqual(ctx.exception.rpc_id, "id-20")
+            self.assertIn("must be an object", ctx.exception.message)
+
+    def test_missing_param_keys_raise_invalid_params_with_field_name(self) -> None:
+        for key in ("request_id", "tool", "arguments", "purpose", "scenario_id"):
+            bad = dict(self.valid_params)
+            del bad[key]
+            with self.assertRaises(RpcError) as ctx:
+                validate_tool_call_params(bad, rpc_id="id-21")
+            self.assertEqual(ctx.exception.code, INVALID_PARAMS)
+            self.assertEqual(ctx.exception.rpc_id, "id-21")
+            self.assertIn(key, ctx.exception.message)
+
+    def test_unknown_param_keys_raise_invalid_params(self) -> None:
+        bad = dict(self.valid_params)
+        bad["unexpected_key"] = "bad"
+        with self.assertRaises(RpcError) as ctx:
+            validate_tool_call_params(bad, rpc_id="id-22")
+        self.assertEqual(ctx.exception.code, INVALID_PARAMS)
+        self.assertEqual(ctx.exception.rpc_id, "id-22")
+        self.assertIn("unexpected_key", ctx.exception.message)
+
+    def test_non_object_arguments_raise_invalid_params(self) -> None:
+        for bad_args in ([1, 2, 3], "string_args", None, 100):
+            bad = dict(self.valid_params)
+            bad["arguments"] = bad_args
+            with self.assertRaises(RpcError) as ctx:
+                validate_tool_call_params(bad, rpc_id="id-23")
+            self.assertEqual(ctx.exception.code, INVALID_PARAMS)
+            self.assertEqual(ctx.exception.rpc_id, "id-23")
+            self.assertIn("arguments", ctx.exception.message)
+
+    def test_valid_params_pass(self) -> None:
+        validate_tool_call_params(self.valid_params, rpc_id="id-24")
 
 
 if __name__ == "__main__":

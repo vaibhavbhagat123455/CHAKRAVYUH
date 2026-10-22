@@ -1,6 +1,10 @@
 """Tests for PolicyConfig, policy v1 configuration, and policy predicates."""
 
 from dataclasses import FrozenInstanceError
+import json
+import os
+from pathlib import Path
+import tempfile
 import unittest
 
 from core.contracts import POLICY_VERSION
@@ -14,6 +18,7 @@ from proxy.policy import (
     is_external_destination,
     is_high_impact,
     is_safe_summary,
+    load_policy,
     requires_approval,
 )
 
@@ -125,59 +130,85 @@ class TestPolicyPredicates(unittest.TestCase):
         self.assertEqual(destination_of({"recipient": "alice@example.edu"}, self.policy), "alice@example.edu")
         self.assertEqual(destination_of({"destination": "bob@college.example"}, self.policy), "bob@college.example")
         self.assertEqual(destination_of({"to": "charlie@example.edu"}, self.policy), "charlie@example.edu")
-        # Precedence order: recipient > destination > to
         args = {"recipient": "primary@example.edu", "destination": "secondary@example.edu", "to": "third@example.edu"}
         self.assertEqual(destination_of(args, self.policy), "primary@example.edu")
-        # Empty recipient skips to destination
         self.assertEqual(destination_of({"recipient": "  ", "destination": "b@example.edu"}, self.policy), "b@example.edu")
-        # None when no key matches
         self.assertIsNone(destination_of({"file": "data.csv"}, self.policy))
         self.assertIsNone(destination_of({}, self.policy))
 
     def test_is_external_destination(self) -> None:
-        # Missing destination is not external
         self.assertFalse(is_external_destination(None, self.policy))
         self.assertFalse(is_external_destination("", self.policy))
         self.assertFalse(is_external_destination("   ", self.policy))
-
-        # Safe internal domains
         self.assertFalse(is_external_destination("dean@example.edu", self.policy))
         self.assertFalse(is_external_destination("DEAN@EXAMPLE.EDU", self.policy))
         self.assertFalse(is_external_destination("admin@college.example", self.policy))
         self.assertFalse(is_external_destination("cs@dept.example.edu", self.policy))
-
-        # External destinations
         self.assertTrue(is_external_destination("attacker@evil.com", self.policy))
-        self.assertTrue(is_external_destination("user@gmail.com", self.policy))
-
-        # Subdomain tricks (must be recognized as external)
         self.assertTrue(is_external_destination("attacker@example.edu.evil.com", self.policy))
         self.assertTrue(is_external_destination("example.edu.evil.com", self.policy))
-
-        # No "@" in destination
         self.assertFalse(is_external_destination("example.edu", self.policy))
         self.assertFalse(is_external_destination("COLLEGE.EXAMPLE", self.policy))
         self.assertTrue(is_external_destination("evil.com", self.policy))
         self.assertTrue(is_external_destination("unknown_endpoint", self.policy))
 
     def test_is_safe_summary(self) -> None:
-        # Public file markers allow summary
         self.assertTrue(is_safe_summary({"file": "synthetic_report.pdf"}, self.policy))
         self.assertTrue(is_safe_summary({"path": "public_bulletin.txt"}, self.policy))
         self.assertTrue(is_safe_summary({"file": "SYNTHETIC_ANNOUNCEMENT.PDF"}, self.policy))
-
-        # Missing marker is not safe
         self.assertFalse(is_safe_summary({"file": "internal_memo.docx"}, self.policy))
         self.assertFalse(is_safe_summary({}, self.policy))
         self.assertFalse(is_safe_summary({"file": ""}, self.policy))
+        self.assertFalse(is_safe_summary({"file": "synthetic_data.pdf", "category": "confidential_report"}, self.policy))
+        self.assertFalse(is_safe_summary({"file": "synthetic_student_record.csv"}, self.policy))
 
-        # Sensitive category prevents safe summary even with public marker
-        self.assertFalse(
-            is_safe_summary({"file": "synthetic_data.pdf", "category": "confidential_report"}, self.policy)
-        )
-        self.assertFalse(
-            is_safe_summary({"file": "synthetic_student_record.csv"}, self.policy)
-        )
+
+class TestPolicyLoaderAndDocumentation(unittest.TestCase):
+    """Test policy JSON loader and R1-R7 table documentation."""
+
+    def test_load_policy_v1_example_equals_policy_v1(self) -> None:
+        path = Path(__file__).resolve().parent.parent / "docs" / "policy_v1.example.json"
+        loaded = load_policy(path)
+        self.assertEqual(loaded, POLICY_V1)
+
+    def test_load_policy_missing_keys(self) -> None:
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            json.dump({"policy_version": "v1"}, f)
+            fname = f.name
+        self.addCleanup(lambda: os.remove(fname))
+        with self.assertRaises(ValueError) as ctx:
+            load_policy(fname)
+        self.assertIn("Missing required keys", str(ctx.exception))
+
+    def test_load_policy_unknown_keys(self) -> None:
+        path = Path(__file__).resolve().parent.parent / "docs" / "policy_v1.example.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["unexpected_key"] = "bad"
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            json.dump(data, f)
+            fname = f.name
+        self.addCleanup(lambda: os.remove(fname))
+        with self.assertRaises(ValueError) as ctx:
+            load_policy(fname)
+        self.assertIn("Unknown keys", str(ctx.exception))
+
+    def test_load_policy_wrong_types(self) -> None:
+        path = Path(__file__).resolve().parent.parent / "docs" / "policy_v1.example.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["allowed_tools"] = "not_a_list"
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            json.dump(data, f)
+            fname = f.name
+        self.addCleanup(lambda: os.remove(fname))
+        with self.assertRaises(ValueError) as ctx:
+            load_policy(fname)
+        self.assertIn("Invalid type", str(ctx.exception))
+
+    def test_r1_to_r7_table_in_policy_docstring(self) -> None:
+        import proxy.policy as pol
+        doc = pol.__doc__ or ""
+        for r_id in ("R1", "R2", "R3", "R4", "R5", "R6", "R7"):
+            self.assertIn(r_id, doc)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,33 @@
+{
+  "policy_version": "v1",
+  "allowed_tools": [
+    "send_email",
+    "summarize_document",
+    "transfer_records"
+  ],
+  "high_impact_tools": [
+    "send_email",
+    "transfer_records"
+  ],
+  "approval_required_tools": [
+    "transfer_records"
+  ],
+  "safe_domains": [
+    "college.example",
+    "example.edu"
+  ],
+  "sensitive_categories": [
+    "confidential_report",
+    "identity_data",
+    "student_record"
+  ],
+  "destination_argument_keys": [
+    "recipient",
+    "destination",
+    "to"
+  ],
+  "public_file_markers": [
+    "synthetic_",
+    "public_"
+  ]
+}

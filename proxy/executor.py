@@ -7,6 +7,8 @@ from typing import Any, Callable, Dict, Mapping, Optional
 
 from proxy.config import ProxyConfig
 from proxy.interfaces import ToolExecutor
+from proxy.models import ALLOW, Decision
+from proxy.pending import PendingRecord
 
 
 class ToolTimeout(Exception):
@@ -18,47 +20,44 @@ class ToolNotFound(Exception):
 
 
 def summarize_document(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Simulate summarizing a document without real I/O."""
-    doc = arguments.get("file") or arguments.get("path") or arguments.get("document") or "synthetic_document"
-    return {
-        "status": "success",
-        "simulated": True,
-        "message": "simulated, not sent",
-        "summary": f"Simulated executive summary for {doc}",
-    }
+    """Blocked direct invocation."""
+    raise PermissionError("Tool execution is reachable only through the proxy.")
 
 
 def send_email(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Simulate sending an email without real network I/O."""
-    recipient = arguments.get("recipient") or arguments.get("to") or "simulated@example.edu"
-    return {
-        "status": "success",
-        "simulated": True,
-        "message": "simulated, not sent",
-        "recipient": recipient,
-    }
+    """Blocked direct invocation."""
+    raise PermissionError("Tool execution is reachable only through the proxy.")
 
 
 def transfer_records(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Simulate records transfer without database operations."""
+    """Blocked direct invocation."""
+    raise PermissionError("Tool execution is reachable only through the proxy.")
+
+
+def _summarize_document(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    doc = arguments.get("file") or arguments.get("path") or arguments.get("document") or "synthetic_document"
+    return {"status": "success", "simulated": True, "message": "simulated, not sent", "summary": f"Simulated executive summary for {doc}"}
+
+
+def _send_email(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    recipient = arguments.get("recipient") or arguments.get("to") or "simulated@example.edu"
+    return {"status": "success", "simulated": True, "message": "simulated, not sent", "recipient": recipient}
+
+
+def _transfer_records(arguments: Dict[str, Any]) -> Dict[str, Any]:
     destination = arguments.get("destination") or arguments.get("recipient") or "archive"
-    return {
-        "status": "success",
-        "simulated": True,
-        "message": "simulated, not sent",
-        "destination": destination,
-    }
+    return {"status": "success", "simulated": True, "message": "simulated, not sent", "destination": destination}
 
 
 DEFAULT_TOOL_REGISTRY: Mapping[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
-    "summarize_document": summarize_document,
-    "send_email": send_email,
-    "transfer_records": transfer_records,
+    "summarize_document": _summarize_document,
+    "send_email": _send_email,
+    "transfer_records": _transfer_records,
 }
 
 
 class SimulatedExecutor(ToolExecutor):
-    """Isolated tool executor running simulated tools with strict timeouts."""
+    """Isolated tool executor running simulated tools with strict timeouts and authorization checks."""
 
     def __init__(
         self,
@@ -70,8 +69,30 @@ class SimulatedExecutor(ToolExecutor):
             timeout_seconds = ProxyConfig().tool_timeout_seconds
         self.timeout_seconds = float(timeout_seconds)
 
-    def execute(self, tool: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute tool in a worker thread and enforce configured timeout."""
+    def execute(
+        self,
+        tool: str,
+        arguments: Dict[str, Any],
+        auth_token: Optional[Any] = None,
+        request_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Execute tool with required authorization token verification."""
+        if auth_token is None:
+            raise PermissionError("Authorisation token required for tool execution.")
+
+        if isinstance(auth_token, Decision):
+            if auth_token.decision != ALLOW:
+                raise PermissionError(f"Authorisation token decision '{auth_token.decision}' is not ALLOW.")
+            if request_id is not None and auth_token.request_id != request_id:
+                raise PermissionError(f"Token request_id '{auth_token.request_id}' does not match '{request_id}'.")
+        elif isinstance(auth_token, PendingRecord):
+            if request_id is not None and auth_token.request.request_id != request_id:
+                raise PermissionError(f"Pending record request_id '{auth_token.request.request_id}' does not match '{request_id}'.")
+            if auth_token.request.tool != tool:
+                raise PermissionError(f"Pending record tool '{auth_token.request.tool}' does not match '{tool}'.")
+        else:
+            raise PermissionError(f"Invalid authorisation token type: {type(auth_token).__name__}")
+
         if tool not in self.registry:
             raise ToolNotFound(f"Tool '{tool}' not found in executor registry")
 
@@ -91,8 +112,6 @@ class SimulatedExecutor(ToolExecutor):
 
         if thread.is_alive():
             raise ToolTimeout(f"Tool '{tool}' execution timed out after {self.timeout_seconds}s")
-
         if errors:
             raise errors[0]
-
         return output[0]

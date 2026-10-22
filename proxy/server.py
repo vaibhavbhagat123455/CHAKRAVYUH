@@ -66,10 +66,10 @@ class ProxyServer:
         self.policy = policy if policy is not None else get_policy(self.policy_version)
         self.pending_store = pending_store or PendingStore(clock=clock, hold_ttl_seconds=self.config.hold_ttl_seconds)
 
-    def _execute_and_contain(self, req_id: str, tool: str, args: Dict[str, Any], ev_id: str, rpc_id: Any) -> Dict[str, Any]:
+    def _execute_and_contain(self, req_id: str, tool: str, args: Dict[str, Any], ev_id: str, rpc_id: Any, auth_token: Optional[Any] = None) -> Dict[str, Any]:
         emit(self.log, TOOL_STARTED, req_id, {"tool": tool, "arguments": args, "evidence_id": ev_id})
         try:
-            res = self.executor.execute(tool, args)
+            res = self.executor.execute(tool, args, auth_token=auth_token, request_id=req_id)
             emit(self.log, TOOL_COMPLETED, req_id, {"tool": tool, "result": res, "evidence_id": ev_id})
             return success_response(rpc_id, {"decision": ALLOW, "evidence_id": ev_id, "tool_result": res, "result": res})
         except Exception as exc:
@@ -112,7 +112,7 @@ class ProxyServer:
                 "decision": decision.decision, "rule_id": decision.rule_id,
             })
         if decision.decision == ALLOW:
-            return self._execute_and_contain(request.request_id, request.tool, request.arguments, decision.evidence_id, eff_id)
+            return self._execute_and_contain(request.request_id, request.tool, request.arguments, decision.evidence_id, eff_id, auth_token=decision)
         if decision.decision == HOLD:
             appr_id = f"appr-{request.request_id}"
             if self.approval is not None:
@@ -147,7 +147,7 @@ class ProxyServer:
             return error_response(request_id, POLICY_DENIED, decision.reason, data={"evidence_id": decision.evidence_id})
         emit(self.log, HOLD_RELEASED, request_id, {"approval_id": approval_result.approval_id, "evidence_id": record.evidence_id, "action_digest": record.action_digest})
         self.pending_store.remove(request_id)
-        return self._execute_and_contain(request_id, record.request.tool, record.request.arguments, record.evidence_id, request_id)
+        return self._execute_and_contain(request_id, record.request.tool, record.request.arguments, record.evidence_id, request_id, auth_token=record)
 
     def expire_pending(self, request_id: str) -> Optional[PendingRecord]:
         record = self.pending_store.remove(request_id)

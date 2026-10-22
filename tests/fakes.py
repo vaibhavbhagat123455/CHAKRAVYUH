@@ -95,9 +95,16 @@ class SpyExecutor(ToolExecutor):
     def call_count(self) -> int:
         return len(self.calls)
 
-    def execute(self, tool: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(
+        self,
+        tool: str,
+        arguments: Dict[str, Any],
+        auth_token: Optional[Any] = None,
+        request_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
         """Record call, apply optional delay, and return configured result."""
-        self.calls.append({"tool": tool, "arguments": arguments})
+        self.calls.append({"tool": tool, "arguments": arguments, "auth_token": auth_token, "request_id": request_id})
         if self.delay_seconds > 0:
             time.sleep(self.delay_seconds)
         if self.exception_to_raise is not None:

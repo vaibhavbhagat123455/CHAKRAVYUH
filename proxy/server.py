@@ -5,9 +5,17 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from core.contracts import POLICY_VERSION
-from proxy.checkpoint import decide
+from proxy.checkpoint import decide, layers
 from proxy.config import ProxyConfig
-from proxy.events import ANALYSIS_RECORDED, REQUEST_RECEIVED, emit
+from proxy.events import (
+    ANALYSIS_RECORDED,
+    CHECKPOINT_DECISION,
+    LAYER_EVALUATED,
+    REQUEST_RECEIVED,
+    TOOL_COMPLETED,
+    TOOL_STARTED,
+    emit,
+)
 from proxy.interfaces import (
     Analyser,
     ApprovalService,
@@ -15,7 +23,8 @@ from proxy.interfaces import (
     LogWriter,
     ToolExecutor,
 )
-from proxy.models import DecisionSignals, ToolRequest
+from proxy.jsonrpc import success_response
+from proxy.models import ALLOW, HOLD, DecisionSignals, ToolRequest
 from proxy.policy import get_policy
 
 
@@ -40,8 +49,12 @@ class ProxyServer:
         self.policy_version = POLICY_VERSION
         self.policy = get_policy(self.policy_version)
 
-    def handle_tool_call(self, request: ToolRequest) -> Dict[str, Any]:
-        """Handle incoming tool call attempt with AI analysis and safe fallback."""
+    def handle_tool_call(
+        self,
+        request: ToolRequest,
+        rpc_id: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Handle incoming tool call attempt with full audit trail and guarded execution."""
         # 1. Initial request audit event
         emit(self.log, REQUEST_RECEIVED, request.request_id, request.to_dict())
 
@@ -78,10 +91,62 @@ class ProxyServer:
         # 3. Deterministic policy decision
         decision = decide(request, signals, policy_version=self.policy_version, policy=self.policy)
 
-        return {
-            "status": "decided",
+        # 4. Seven defense layers trail
+        layer_results = layers(request, signals, decision, self.policy)
+        for lr in layer_results:
+            layer_payload = {
+                "layer_id": lr.layer_id,
+                "status": lr.status,
+                "reason": lr.reason,
+                "evidence_id": lr.evidence_id,
+            }
+            emit(self.log, LAYER_EVALUATED, request.request_id, layer_payload)
+
+        # 5. Checkpoint decision audit event BEFORE any execution
+        decision_payload = {
             "decision": decision.decision,
             "evidence_id": decision.evidence_id,
             "rule_id": decision.rule_id,
             "reason": decision.reason,
+            "policy_version": decision.policy_version,
+            "signals": signals.to_dict() if signals is not None else None,
+        }
+        emit(self.log, CHECKPOINT_DECISION, request.request_id, decision_payload)
+
+        # 6. Execute ALLOW decisions
+        effective_rpc_id = rpc_id if rpc_id is not None else request.request_id
+        if decision.decision == ALLOW:
+            emit(
+                self.log,
+                TOOL_STARTED,
+                request.request_id,
+                {"tool": request.tool, "arguments": request.arguments, "evidence_id": decision.evidence_id},
+            )
+
+            tool_result = self.executor.execute(request.tool, request.arguments)
+
+            emit(
+                self.log,
+                TOOL_COMPLETED,
+                request.request_id,
+                {"tool": request.tool, "result": tool_result, "evidence_id": decision.evidence_id},
+            )
+
+            return success_response(
+                effective_rpc_id,
+                {
+                    "decision": decision.decision,
+                    "evidence_id": decision.evidence_id,
+                    "tool_result": tool_result,
+                    "result": tool_result,
+                },
+            )
+
+        # Non-ALLOW response
+        return {
+            "decision": decision.decision,
+            "evidence_id": decision.evidence_id,
+            "rule_id": decision.rule_id,
+            "reason": decision.reason,
+            "policy_version": decision.policy_version,
         }

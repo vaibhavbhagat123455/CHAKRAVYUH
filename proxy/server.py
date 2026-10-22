@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Optional
 
 from core.contracts import POLICY_VERSION
+from proxy.canonical import action_digest
 from proxy.checkpoint import decide, layers
 from proxy.config import ProxyConfig
 from proxy.events import (
     ANALYSIS_RECORDED,
     CHECKPOINT_DECISION,
     HOLD_CREATED,
+    HOLD_DENIED,
+    HOLD_EXPIRED,
+    HOLD_RELEASED,
     LAYER_EVALUATED,
     REQUEST_RECEIVED,
     TOOL_BLOCKED,
@@ -19,7 +24,6 @@ from proxy.events import (
     TOOL_TIMEOUT,
     emit,
 )
-from proxy.pending import PendingStore
 from proxy.interfaces import (
     Analyser,
     ApprovalService,
@@ -28,7 +32,8 @@ from proxy.interfaces import (
     ToolExecutor,
 )
 from proxy.jsonrpc import POLICY_DENIED, TOOL_FAILED, error_response, success_response
-from proxy.models import ALLOW, DENY, HOLD, DecisionSignals, ToolRequest
+from proxy.models import ALLOW, DENY, HOLD, ApprovalResult, DecisionSignals, ToolRequest
+from proxy.pending import PendingStore
 from proxy.policy import get_policy
 
 
@@ -59,6 +64,39 @@ class ProxyServer:
             else PendingStore(clock=self.clock, hold_ttl_seconds=self.config.hold_ttl_seconds)
         )
 
+    def _execute_and_contain(
+        self,
+        request_id: str,
+        tool: str,
+        arguments: Dict[str, Any],
+        evidence_id: str,
+        rpc_id: Any,
+    ) -> Dict[str, Any]:
+        """Execute tool with timeout/failure containment and audit logging."""
+        emit(self.log, TOOL_STARTED, request_id, {
+            "tool": tool, "arguments": arguments, "evidence_id": evidence_id,
+        })
+        try:
+            tool_result = self.executor.execute(tool, arguments)
+        except Exception as exc:
+            emit(self.log, TOOL_TIMEOUT, request_id, {
+                "tool": tool, "evidence_id": evidence_id,
+                "error_type": type(exc).__name__, "error": str(exc),
+            })
+            return error_response(
+                rpc_id,
+                TOOL_FAILED,
+                f"Tool execution failed: {exc}",
+                data={"evidence_id": evidence_id, "error_type": type(exc).__name__},
+            )
+        emit(self.log, TOOL_COMPLETED, request_id, {
+            "tool": tool, "result": tool_result, "evidence_id": evidence_id,
+        })
+        return success_response(rpc_id, {
+            "decision": ALLOW, "evidence_id": evidence_id,
+            "tool_result": tool_result, "result": tool_result,
+        })
+
     def handle_tool_call(
         self,
         request: ToolRequest,
@@ -66,11 +104,8 @@ class ProxyServer:
     ) -> Dict[str, Any]:
         """Handle incoming tool call attempt with full audit trail and guarded execution."""
         effective_rpc_id = rpc_id if rpc_id is not None else request.request_id
-
-        # 1. Initial request audit event
         emit(self.log, REQUEST_RECEIVED, request.request_id, request.to_dict())
 
-        # 2. Call analyser with safe fallback
         signals: Optional[DecisionSignals] = None
         analyser_failed = False
         error_type: Optional[str] = None
@@ -97,102 +132,35 @@ class ProxyServer:
             analysis_payload["error_type"] = error_type
         if model_version is not None:
             analysis_payload["model_version"] = model_version
-
         emit(self.log, ANALYSIS_RECORDED, request.request_id, analysis_payload)
 
-        # 3. Deterministic policy decision
         decision = decide(request, signals, policy_version=self.policy_version, policy=self.policy)
 
-        # 4. Seven defense layers trail
-        layer_results = layers(request, signals, decision, self.policy)
-        for lr in layer_results:
-            layer_payload = {
-                "layer_id": lr.layer_id,
-                "status": lr.status,
-                "reason": lr.reason,
-                "evidence_id": lr.evidence_id,
-            }
-            emit(self.log, LAYER_EVALUATED, request.request_id, layer_payload)
+        for lr in layers(request, signals, decision, self.policy):
+            emit(self.log, LAYER_EVALUATED, request.request_id, lr.to_dict())
 
-        # 5. Checkpoint decision audit event BEFORE any execution
-        decision_payload = {
-            "decision": decision.decision,
-            "evidence_id": decision.evidence_id,
-            "rule_id": decision.rule_id,
-            "reason": decision.reason,
+        emit(self.log, CHECKPOINT_DECISION, request.request_id, {
+            "decision": decision.decision, "evidence_id": decision.evidence_id,
+            "rule_id": decision.rule_id, "reason": decision.reason,
             "policy_version": decision.policy_version,
             "signals": signals.to_dict() if signals is not None else None,
-        }
-        emit(self.log, CHECKPOINT_DECISION, request.request_id, decision_payload)
+        })
 
-        # 6. Block DENY decisions immediately
         if decision.decision == DENY:
-            blocked_payload = {
-                "decision": decision.decision,
-                "evidence_id": decision.evidence_id,
-                "rule_id": decision.rule_id,
-                "reason": decision.reason,
-                "tool": request.tool,
-            }
-            emit(self.log, TOOL_BLOCKED, request.request_id, blocked_payload)
+            emit(self.log, TOOL_BLOCKED, request.request_id, {
+                "decision": decision.decision, "evidence_id": decision.evidence_id,
+                "rule_id": decision.rule_id, "reason": decision.reason, "tool": request.tool,
+            })
+            return error_response(effective_rpc_id, POLICY_DENIED, decision.reason, data={
+                "evidence_id": decision.evidence_id, "reason": decision.reason,
+                "decision": decision.decision, "rule_id": decision.rule_id,
+            })
 
-            error_data = {
-                "evidence_id": decision.evidence_id,
-                "reason": decision.reason,
-                "decision": decision.decision,
-                "rule_id": decision.rule_id,
-            }
-            return error_response(
-                effective_rpc_id,
-                POLICY_DENIED,
-                decision.reason,
-                data=error_data,
-            )
-
-        # 7. Execute ALLOW decisions with containment
         if decision.decision == ALLOW:
-            emit(
-                self.log,
-                TOOL_STARTED,
-                request.request_id,
-                {"tool": request.tool, "arguments": request.arguments, "evidence_id": decision.evidence_id},
+            return self._execute_and_contain(
+                request.request_id, request.tool, request.arguments, decision.evidence_id, effective_rpc_id
             )
 
-            try:
-                tool_result = self.executor.execute(request.tool, request.arguments)
-            except Exception as exc:
-                containment_payload = {
-                    "tool": request.tool,
-                    "evidence_id": decision.evidence_id,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                }
-                emit(self.log, TOOL_TIMEOUT, request.request_id, containment_payload)
-                return error_response(
-                    effective_rpc_id,
-                    TOOL_FAILED,
-                    f"Tool execution failed: {exc}",
-                    data={"evidence_id": decision.evidence_id, "error_type": type(exc).__name__},
-                )
-
-            emit(
-                self.log,
-                TOOL_COMPLETED,
-                request.request_id,
-                {"tool": request.tool, "result": tool_result, "evidence_id": decision.evidence_id},
-            )
-
-            return success_response(
-                effective_rpc_id,
-                {
-                    "decision": decision.decision,
-                    "evidence_id": decision.evidence_id,
-                    "tool_result": tool_result,
-                    "result": tool_result,
-                },
-            )
-
-        # 8. Place HOLD decisions in PendingStore and emit HOLD_CREATED
         if decision.decision == HOLD:
             approval_id = f"appr-{request.request_id}"
             if self.approval is not None:
@@ -203,35 +171,74 @@ class ProxyServer:
                     approval_id = res
 
             record = self.pending_store.add(
-                request=request,
-                evidence_id=decision.evidence_id,
-                signals=signals,
-                approval_id=approval_id,
+                request=request, evidence_id=decision.evidence_id,
+                signals=signals, approval_id=approval_id,
             )
-
-            emit(
-                self.log,
-                HOLD_CREATED,
-                request.request_id,
-                {
-                    "approval_id": approval_id,
-                    "evidence_id": decision.evidence_id,
-                    "action_digest": record.action_digest,
-                    "tool": request.tool,
-                },
-            )
-
+            emit(self.log, HOLD_CREATED, request.request_id, {
+                "approval_id": approval_id, "evidence_id": decision.evidence_id,
+                "action_digest": record.action_digest, "tool": request.tool,
+            })
             return {
-                "decision": HOLD,
-                "evidence_id": decision.evidence_id,
+                "decision": HOLD, "evidence_id": decision.evidence_id,
                 "approval_id": approval_id,
             }
 
-        # Non-ALLOW non-DENY non-HOLD response
         return {
-            "decision": decision.decision,
-            "evidence_id": decision.evidence_id,
-            "rule_id": decision.rule_id,
-            "reason": decision.reason,
+            "decision": decision.decision, "evidence_id": decision.evidence_id,
+            "rule_id": decision.rule_id, "reason": decision.reason,
             "policy_version": decision.policy_version,
         }
+
+    def release_pending(
+        self,
+        request_id: str,
+        approval_result: ApprovalResult,
+    ) -> Dict[str, Any]:
+        """Verify authorization and release a held request for execution."""
+        record = self.pending_store.get(request_id)
+        if record is None:
+            emit(self.log, HOLD_DENIED, request_id, {
+                "outcome": "denied", "reason": "Unknown pending request",
+            })
+            return error_response(request_id, POLICY_DENIED, "Unknown pending request")
+
+        now = self.clock.now() if self.clock is not None else time.time()
+        if now > record.expires_at:
+            self.pending_store.remove(request_id)
+            emit(self.log, HOLD_EXPIRED, request_id, {
+                "outcome": "expired", "evidence_id": record.evidence_id,
+                "reason": "Pending request expired",
+            })
+            return error_response(request_id, POLICY_DENIED, "Pending request expired")
+
+        computed_digest = action_digest(record.request.tool, record.request.arguments)
+        if not approval_result.approved or approval_result.action_digest != computed_digest:
+            self.pending_store.remove(request_id)
+            emit(self.log, HOLD_DENIED, request_id, {
+                "outcome": "denied", "evidence_id": record.evidence_id,
+                "reason": "Approval verification failed or denied",
+            })
+            return error_response(request_id, POLICY_DENIED, "Approval verification failed or denied")
+
+        decision = decide(record.request, record.signals, policy_version=self.policy_version, policy=self.policy)
+        if decision.decision == DENY:
+            self.pending_store.remove(request_id)
+            emit(self.log, HOLD_DENIED, request_id, {
+                "outcome": "denied", "evidence_id": decision.evidence_id,
+                "reason": decision.reason,
+            })
+            return error_response(request_id, POLICY_DENIED, decision.reason, data={"evidence_id": decision.evidence_id})
+
+        emit(self.log, HOLD_RELEASED, request_id, {
+            "approval_id": approval_result.approval_id,
+            "evidence_id": record.evidence_id,
+            "action_digest": record.action_digest,
+        })
+        self.pending_store.remove(request_id)
+        return self._execute_and_contain(
+            request_id=request_id,
+            tool=record.request.tool,
+            arguments=record.request.arguments,
+            evidence_id=record.evidence_id,
+            rpc_id=request_id,
+        )

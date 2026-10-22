@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+from proxy.models import ToolRequest
 
 # Standard JSON-RPC 2.0 and Chakravyuh error codes
 PARSE_ERROR = -32700
@@ -170,3 +172,24 @@ def validate_tool_call_params(params: Any, rpc_id: Optional[Any] = None) -> None
             f"Parameter 'arguments' must be an object (dict), got: {type(args).__name__}",
             rpc_id=rpc_id,
         )
+
+
+def validate_request(raw: Any) -> Tuple[Any, ToolRequest]:
+    """Validate JSON-RPC 2.0 tool-call request and construct a ToolRequest.
+
+    Validates envelope, method, and tool-call params.
+    Converts params into ToolRequest using ToolRequest.from_dict.
+    Catches ValueError from ToolRequest and re-raises as RpcError(INVALID_PARAMS).
+    Returns (rpc_id, ToolRequest).
+    """
+    validate_envelope(raw)
+    rpc_id = raw["id"]
+    validate_method(raw["method"], rpc_id=rpc_id)
+    params = raw.get("params")
+    validate_tool_call_params(params, rpc_id=rpc_id)
+    try:
+        req = ToolRequest.from_dict(params)
+    except ValueError as exc:
+        raise RpcError(INVALID_PARAMS, str(exc), rpc_id=rpc_id) from exc
+    return rpc_id, req
+

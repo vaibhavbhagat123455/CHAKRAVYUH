@@ -390,6 +390,7 @@ class ReplayDecision:
     evidence_id: str | None = None
     evidence_id_match: bool | None = None
     expected: str | None = None
+    final_decision: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -404,6 +405,8 @@ class ReplayDecision:
             data["evidence_id_match"] = self.evidence_id_match
         if self.expected is not None:
             data["expected"] = self.expected
+        if self.final_decision is not None:
+            data["final_decision"] = self.final_decision
         return data
 
 

@@ -7,8 +7,12 @@ AI interprets, policy enforces, log proves.
 ## Module boundaries
 
 ```text
-scenario fixture
+scenario fixture / real PDF inspection
       |
+      v
+MCP stdio client
+      |
+      | JSON-RPC 2.0 over stdin/stdout
       v
 MCP proxy (Member 2)
       |
@@ -17,6 +21,9 @@ MCP proxy (Member 2)
       +--> policy matrix (core.policies, deterministic)
       |
       +--> approval service (Member 4, only for HOLD)
+      |        |
+      |        +--> email / Telegram / offline mock adapter
+      |        +--> one-call release proof
       |
       +--> simulated tool executor
       |
@@ -65,7 +72,7 @@ CHECKPOINT_DECISION
 SCENARIO_END
 ```
 
-`CHECKPOINT_DECISION` is the replay anchor. Its payload contains the exact recorded request and AI signals, so replay does not call the AI again.
+`CHECKPOINT_DECISION` is the replay anchor. Its payload contains the exact recorded request and AI signals, so replay does not call the AI again. An `APPROVED_RELEASE` event records the final `ALLOW` outcome when a held request is later approved.
 
 ## Hash chain
 
@@ -103,9 +110,9 @@ The following are allowed only during append, never during replay:
 | Malformed event | verification reports `INVALID_EVENT` |
 | Unknown policy version | policy fails closed |
 | AI unavailable | use recorded signals for replay or conservative `HOLD` for live calls |
-| Notification unavailable | use the mock adapter and explain the adapter boundary |
+| Notification unavailable | fail the configured adapter; offline demo mode uses a mock adapter and explains the adapter boundary |
 | UI unavailable | run the CLI verify/replay demo |
 
 ## Synthetic-only boundary
 
-All fixtures, recipients, filenames and records are synthetic. The tool executor is simulated. No real email, database, file export or external transfer is implemented.
+The checked-in PDFs are synthetic but real parseable PDF files. All recipients, filenames and records are synthetic. The default executor performs local PDF summarisation and writes transfer intents to an ignored sandbox directory; it never makes network side effects. Production integrations must be supplied as an explicit executor adapter and still remain behind the proxy.

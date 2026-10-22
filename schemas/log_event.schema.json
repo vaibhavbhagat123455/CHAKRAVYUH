@@ -35,7 +35,10 @@
         "TOOL_BLOCKED",
         "TOOL_TIMEOUT",
         "CONTAINMENT",
-        "SCENARIO_END"
+        "SCENARIO_END",
+        "SCENARIO_DECISION",
+        "APPROVED_RELEASE",
+        "PDF_INSPECTED"
       ]
     },
     "request_id": {"type": "string", "minLength": 1},

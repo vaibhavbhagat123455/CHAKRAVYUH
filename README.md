@@ -1,15 +1,8 @@
 # AI Chakravyuh - AI Tool-Call Checkpoint
 
-AI Chakravyuh is a synthetic security checkpoint for AI-agent tool use. The AI interprets untrusted content; a deterministic policy checkpoint decides; an append-only hash-chained log proves what happened.
-
-This repository currently contains the shared foundation and the Member 1 log/replay module. AI analysis, MCP proxy, approval and UI modules are integrated through the contracts in `docs/contracts.md`.
-
-## Safety boundary
-
-- All data, recipients, filenames and tool results are synthetic.
-- The tool executor is simulated.
-- No real email, database, file export or external transfer is implemented.
-- Prompt-injected content is treated as untrusted data and is never executed.
+AI Chakravyuh is a synthetic security checkpoint for AI-agent tool use. The
+AI interprets untrusted content; deterministic policy code decides; an
+append-only hash-chained log proves what happened.
 
 ## Setup
 
@@ -19,60 +12,52 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Run tests
+Windows shortcut:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\setup.ps1
+```
+
+## Run all tests
 
 ```powershell
 python -m pytest -q
 ```
 
-Stdlib fallback for the Member 1 suite:
+Stdlib fallback: `python -m unittest discover -s tests -v`.
+
+## Run the full local demo
 
 ```powershell
-python -m unittest tests.test_log tests.test_policy tests.test_replay tests.test_cli tests.test_contracts -v
+python -m ui.dashboard
 ```
 
-Zero-dependency fallback for the Member 3 checks once merged:
+Open `http://127.0.0.1:8765`. The dashboard launches a real MCP JSON-RPC
+subprocess over stdin/stdout. It parses the included synthetic PDFs, runs the
+checkpoint, and records every event in `data/security_log.jsonl`. The default
+tool executor performs local PDF summarisation and writes transfer intents to
+the ignored `data/tool-effects/` sandbox; it makes no network side effects.
+`scripts/run_demo.ps1` starts with a fresh evidence log while preserving the
+previous run as `security_log.jsonl.previous`.
+
+For an actual out-of-band code delivery, copy `.env.example` to `.env`, set
+`APPROVAL_CHANNEL=email` or `telegram`, and provide the corresponding SMTP or
+Telegram settings. Mock mode is intentionally offline and prints the code only
+to the server terminal, never to the browser.
+
+## Run individual verification commands
 
 ```powershell
+python -m ai.run_scenarios scenarios
 python validate_member3.py
-```
-
-## Member 1 commands
-
-Verify a security log:
-
-```powershell
-python -m core.verify data/security_log.jsonl
-```
-
-Replay recorded checkpoint decisions:
-
-```powershell
-python -m core.replay data/security_log.jsonl --output replay.json
-```
-
-Verify and replay the deterministic demo fixture:
-
-```powershell
 python -m core.verify data/fixtures/original_log.jsonl
 python -m core.replay data/fixtures/original_log.jsonl --expected data/fixtures/expected_decisions.json
-```
-
-Regenerate all Member 1 fixtures:
-
-```powershell
-python scripts/build_member1_fixtures.py
-```
-
-Generate the tamper and replay proof for the jury:
-
-```powershell
 python scripts/demo_member1.py
+python -m approval.test_flow
 ```
 
-This writes valid, tampered and replay reports to `docs/demo-evidence/`.
-
-## Demo expectations
+## Expected scenarios
 
 | Scenario | Expected decision |
 |---|---|
@@ -80,11 +65,12 @@ This writes valid, tampered and replay reports to `docs/demo-evidence/`.
 | `safe-summary-001` | `ALLOW` |
 | `approval-transfer-001` | `HOLD` |
 
-## Useful documents
+## Team modules
 
-- `docs/MEMBER1_IMPLEMENTATION_PLAN.md`
-- `docs/TEAM_CONTRACTS.md`
-- `docs/contracts.md`
-- `docs/architecture.md`
-- `docs/demo-evidence/README.md`
-- `core/README.md`
+- Member 1: append-only log, verification, replay and policy engine.
+- Member 2: MCP JSON-RPC-over-stdio proxy and tool-call checkpoint.
+- Member 3: AI threat analysis and scenario engine.
+- Member 4: exact one-time approval and dashboard.
+
+All cross-module conventions are documented in `docs/TEAM_CONTRACTS.md` and
+`docs/contracts.md`.

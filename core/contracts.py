@@ -23,6 +23,9 @@ LOG_EVENT_TYPES = frozenset({
     "TOOL_TIMEOUT",
     "CONTAINMENT",
     "SCENARIO_END",
+    "SCENARIO_DECISION",
+    "APPROVED_RELEASE",
+    "PDF_INSPECTED",
 })
 
 

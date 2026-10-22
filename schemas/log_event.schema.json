@@ -3,14 +3,49 @@
   "title": "AI Chakravyuh Log Event",
   "type": "object",
   "additionalProperties": false,
-  "required": ["sequence", "event_id", "event_type", "request_id", "payload", "previous_hash", "entry_hash"],
+  "required": [
+    "sequence",
+    "event_id",
+    "timestamp",
+    "event_type",
+    "request_id",
+    "payload",
+    "previous_hash",
+    "entry_hash"
+  ],
   "properties": {
     "sequence": {"type": "integer", "minimum": 1},
     "event_id": {"type": "string", "minLength": 1},
-    "event_type": {"type": "string", "minLength": 1},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "event_type": {
+      "enum": [
+        "SCENARIO_START",
+        "REQUEST_RECEIVED",
+        "AI_ANALYSIS",
+        "LAYER_EVALUATED",
+        "CHECKPOINT_DECISION",
+        "APPROVAL_CREATED",
+        "APPROVAL_SENT",
+        "APPROVAL_ATTEMPT",
+        "APPROVAL_VERIFIED",
+        "APPROVAL_REJECTED",
+        "APPROVAL_EXPIRED",
+        "TOOL_STARTED",
+        "TOOL_COMPLETED",
+        "TOOL_BLOCKED",
+        "TOOL_TIMEOUT",
+        "CONTAINMENT",
+        "SCENARIO_END"
+      ]
+    },
     "request_id": {"type": "string", "minLength": 1},
+    "scenario_id": {"type": "string", "minLength": 1},
+    "decision": {"enum": ["ALLOW", "HOLD", "DENY"]},
+    "evidence_id": {"type": "string", "minLength": 1},
+    "policy_version": {"type": "string", "minLength": 1},
+    "analyser_version": {"type": "string", "minLength": 1},
     "payload": {"type": "object"},
-    "previous_hash": {"type": "string", "minLength": 1},
-    "entry_hash": {"type": "string", "minLength": 1}
+    "previous_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "entry_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   }
 }

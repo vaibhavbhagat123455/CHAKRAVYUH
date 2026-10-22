@@ -2,6 +2,18 @@
 
 All contract changes must be recorded here.
 
+## v1.1 - checkpoint hardening
+
+### Added
+
+- real parseable synthetic PDF fixtures and deterministic `PDF_INSPECTED` evidence;
+- canonical `core.action.action_digest()` binding request ID, tool, arguments, purpose and scenario;
+- MCP `tools/approve` release method protected by a one-call bridge proof;
+- dashboard MCP client subprocess using JSON-RPC 2.0 over stdio;
+- hash-chained standalone approval events;
+- replay reporting of final `APPROVED_RELEASE` outcomes;
+- canonical `LOG_PATH` and explicit fresh-demo log rotation.
+
 ## v1 - foundation
 
 ### Added

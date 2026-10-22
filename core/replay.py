@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -20,6 +21,7 @@ def _decision_digest(decisions: Sequence[ReplayDecision]) -> str:
             "request_id": decision.request_id,
             "decision": decision.replayed,
             "evidence_id": decision.evidence_id,
+            **({"final_decision": decision.final_decision} if decision.final_decision is not None else {}),
         }
         for decision in decisions
     ]
@@ -89,6 +91,7 @@ def replay_log(
         return _invalid_result(log_verified, f"cannot load expected decisions: {exc}")
     decisions: list[ReplayDecision] = []
     versions: set[str] = set()
+    approved_outcomes: dict[str, str] = {}
 
     for line_number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
@@ -98,6 +101,10 @@ def replay_log(
             event = LogEvent.from_dict(raw)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             return _invalid_result(log_verified, f"invalid log event on line {line_number}: {exc}", decisions)
+        if event.event_type == "APPROVED_RELEASE":
+            if event.decision in DECISIONS:
+                approved_outcomes[event.request_id] = event.decision
+            continue
         if event.event_type != "CHECKPOINT_DECISION":
             continue
 
@@ -144,6 +151,7 @@ def replay_log(
         )
         decisions.append(decision)
 
+    decisions = [replace(item, final_decision=approved_outcomes.get(item.request_id)) for item in decisions]
     unexpected = sorted(set(expected_decisions) - {decision.request_id for decision in decisions})
     if unexpected:
         return _invalid_result(

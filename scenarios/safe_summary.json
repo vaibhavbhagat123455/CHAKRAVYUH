@@ -4,6 +4,7 @@
   "status": "ALLOW",
   "original_goal": "Summarise the college circular for the user",
   "content": "The synthetic circular describes library hours, help-desk timings and the date of the next orientation session.",
+  "document_path": "data/fixtures/synthetic_public_circular.pdf",
   "input_summary": "Synthetic public notice with no override instructions or sensitive data.",
   "tool_request": {
     "request_id": "req-safe-001",

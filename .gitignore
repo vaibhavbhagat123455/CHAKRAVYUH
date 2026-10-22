@@ -6,6 +6,8 @@ __pycache__/
 data/security_log.jsonl
 data/*.tampered.jsonl
 data/*.jsonl
+data/tool-effects/
+data/*.previous
 replay.json
 replay-*.json
 *.log

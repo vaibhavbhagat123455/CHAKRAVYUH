@@ -33,10 +33,18 @@ Stdlib fallback: `python -m unittest discover -s tests -v`.
 python -m ui.dashboard
 ```
 
-Open `http://127.0.0.1:8765`. The demo uses synthetic fixtures and simulated
-tools only. Run safe summary, malicious PDF and approval transfer. The
-approval code is delivered through the configured mock/out-of-band adapter and
-never returned by the browser endpoint.
+Open `http://127.0.0.1:8765`. The dashboard launches a real MCP JSON-RPC
+subprocess over stdin/stdout. It parses the included synthetic PDFs, runs the
+checkpoint, and records every event in `data/security_log.jsonl`. The default
+tool executor performs local PDF summarisation and writes transfer intents to
+the ignored `data/tool-effects/` sandbox; it makes no network side effects.
+`scripts/run_demo.ps1` starts with a fresh evidence log while preserving the
+previous run as `security_log.jsonl.previous`.
+
+For an actual out-of-band code delivery, copy `.env.example` to `.env`, set
+`APPROVAL_CHANNEL=email` or `telegram`, and provide the corresponding SMTP or
+Telegram settings. Mock mode is intentionally offline and prints the code only
+to the server terminal, never to the browser.
 
 ## Run individual verification commands
 

@@ -25,6 +25,7 @@ LOG_EVENT_TYPES = frozenset({
     "SCENARIO_END",
     "SCENARIO_DECISION",
     "APPROVED_RELEASE",
+    "PDF_INSPECTED",
 })
 
 

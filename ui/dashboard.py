@@ -11,12 +11,11 @@ from urllib.parse import urlparse
 
 from approval.approval_codes import ApprovalService
 from approval.notification import ConfiguredNotificationAdapter, MockNotificationAdapter
-from proxy.checkpoint import Checkpoint
-from proxy.mcp_server import McpToolProxy
-from proxy.tool_executor import SimulatedToolExecutor
+from core.config import ROOT, configured_approval_ttl, configured_log_path, load_dotenv
+from core.pdf_scanner import inspect_pdf
+from proxy.stdio_client import StdioMcpClient
 from ui.evidence import EvidenceLog
 
-ROOT = Path(__file__).resolve().parents[1]
 SCENARIOS = ROOT / "scenarios"
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI Chakravyuh | Evidence Console</title>
@@ -30,7 +29,7 @@ HTML = r'''<!doctype html>
 <article class="card wide"><div class="cardhead"><h2>Seven-layer review</h2><span class="label">Every layer leaves a reason</span></div><div id="layers" class="layers"></div></article>
 <article class="card"><div class="cardhead"><h2>Request timeline</h2><span class="label">Synthetic tool</span></div><div class="timeline"><div class="label">Request ID</div><div id="requestId" class="mono">—</div><div class="label">Tool</div><div id="toolName" class="mono">—</div><div class="label">Arguments</div><div id="arguments" class="mono">—</div><div class="label">Evidence ID</div><div id="evidence" class="mono">Pending scenario run</div><div class="label">Log sequence</div><div id="sequence" class="mono">—</div></div></article>
 <article class="card"><div class="cardhead"><h2>Evidence controls</h2><span class="label">Append-only events</span></div><div class="actions"><button class="ghost" id="verify">Verify log</button><button class="ghost" id="replay">Replay decisions</button><button class="ghost" id="showLog">Refresh log</button></div><div id="controlsResult" class="statusline">Run a scenario to create evidence.</div><div id="log" class="log"></div></article></section>
-<div class="foot">Fictional fixtures · simulated tools only · approval codes are delivered out of band and never shown here</div></main>
+<div class="foot">Synthetic fixtures · sandboxed local tools · approval codes are delivered out of band and never shown here</div></main>
 <script>
 let current=null;const $=id=>document.getElementById(id);async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});const x=await r.json();if(!r.ok)throw Error(x.error||'Request failed');return x}
 function showScenario(s){current=s;$('scenarioTag').textContent=s.scenario_id;$('goal').textContent=s.original_goal;$('summary').textContent=s.input_summary;$('decision').textContent=s.decision;$('decision').className='decision-badge '+s.decision;$('reason').textContent=s.reason;$('tool').textContent=s.request.tool+' · '+s.request.request_id;$('requestId').textContent=s.request.request_id;$('toolName').textContent=s.request.tool;$('arguments').textContent=JSON.stringify(s.request.arguments);$('layers').innerHTML=s.layers.map(l=>`<div class="layer"><strong><span>${l.layer_id}</span><span class="status ${l.status}">${l.status}</span></strong><p>${l.reason}</p></div>`).join('');$('approvalArea').classList.toggle('hidden',s.decision!=='HOLD');$('approvalResult').textContent='';$('code').value='';$('evidence').textContent=s.evidence_id||'—';$('sequence').textContent=s.log_sequence||'—';refreshLog()}
@@ -45,23 +44,36 @@ $('showLog').onclick=refreshLog;
 
 class DashboardState:
     def __init__(self, service: ApprovalService | None = None, *, evidence_path: str | Path | None = None,
-                 approval_log_path: str | Path | None = None) -> None:
+                 approval_log_path: str | Path | None = None, reset_log: bool = False) -> None:
+        load_dotenv()
         self.notifier = MockNotificationAdapter()
         self.scenarios: dict[str, dict] = {}
-        self.evidence = EvidenceLog(evidence_path or ROOT / "data" / "security-log.jsonl")
-        self.executor = SimulatedToolExecutor()
-        self.proxy = McpToolProxy(Checkpoint(self.evidence.path), self.executor)
-        ttl_seconds = int(os.getenv("APPROVAL_CODE_TTL_SECONDS", "180"))
+        selected_path = Path(evidence_path or configured_log_path(ROOT / "data" / "security_log.jsonl"))
+        if reset_log and selected_path.exists():
+            backup = selected_path.with_name(selected_path.name + ".previous")
+            if backup.exists():
+                backup.unlink()
+            selected_path.replace(backup)
+        self.evidence = EvidenceLog(selected_path)
+        self.approval_secret = secrets.token_hex(32)
+        self.proxy = StdioMcpClient(log_path=self.evidence.path, approval_secret=self.approval_secret)
+        ttl_seconds = configured_approval_ttl()
         self.service = service or ApprovalService(self.notifier, ttl_seconds=ttl_seconds,
-                                                 log_path=approval_log_path or ROOT / "data" / "approval-events.jsonl",
+                                                 log_path=approval_log_path or self.evidence.path,
                                                  resume_callback=self._resume_held_request,
-                                                 event_sink=self.evidence.append)
+                                                 event_sink=self.evidence.append,
+                                                 bridge_secret=self.approval_secret)
 
     def _resume_held_request(self, request: dict) -> str:
         scenario = self.scenarios.get(request.get("request_id"))
         if scenario is None or scenario.get("decision") != "HOLD":
             return "held request unavailable"
-        self.proxy.release_held(request["request_id"], approval_verified=True)
+        token = self.service.consume_release_token(request["request_id"])
+        if not token:
+            raise PermissionError("approval release proof is unavailable")
+        response = self.proxy.approve(request, scenario["approval_id"], token)
+        if "error" in response:
+            raise PermissionError(response["error"].get("message", "MCP approval release failed"))
         scenario["approval_status"] = "APPROVED"
         scenario["decision"] = "ALLOW"
         event = self.evidence.append({"event_id": f"evt-{secrets.token_hex(8)}", "event_type": "APPROVED_RELEASE",
@@ -77,20 +89,24 @@ class DashboardState:
             raise ValueError("Unknown scenario. Choose one of the listed synthetic fixtures.")
         scenario = json.loads(path.read_text(encoding="utf-8"))
         scenario["scenario_id"] = scenario_id
-        rpc_payload = {
-            "jsonrpc": "2.0", "id": f"dashboard-{scenario_id}", "method": "tools/call",
-            "params": {"request": scenario["request"], "content": scenario.get("content", "")},
-        }
-        response = self.proxy.handle(rpc_payload)
-        decision = self.proxy.checkpoint.decisions[scenario["request"]["request_id"]]
-        scenario["decision"] = decision.decision
-        scenario["reason"] = decision.reason
-        scenario["evidence_id"] = decision.evidence_id
-        scenario["layers"] = [
-            {"layer_id": item.layer_id, "status": {"BLOCK": "DENY", "REVIEW": "REVIEW"}.get(item.status, item.status), "reason": item.reason}
-            for item in decision.layer_results
-        ]
-        if decision.decision == "HOLD":
+        content = scenario.get("content", "")
+        document_path = scenario.get("document_path")
+        if document_path:
+            pdf_path = ROOT / document_path
+            inspection = inspect_pdf(pdf_path)
+            scenario["document_scan"] = inspection.to_dict()
+            self.evidence.append({"event_id": f"evt-{secrets.token_hex(8)}", "event_type": "PDF_INSPECTED",
+                                  "request_id": scenario["request"]["request_id"],
+                                  "scenario_id": scenario_id, "payload": inspection.to_dict()})
+            content = inspection.extracted_text
+        response = self.proxy.call_tool(scenario["request"], content)
+        result = response.get("result") or response.get("error", {}).get("data", {})
+        scenario["decision"] = result.get("decision", "DENY" if "error" in response else "HOLD")
+        scenario["reason"] = result.get("reason", response.get("error", {}).get("message", "MCP proxy rejected the call"))
+        scenario["evidence_id"] = result.get("evidence_id")
+        scenario["layers"] = result.get("layers", [])
+        scenario["mcp_transport"] = "JSON-RPC 2.0 over stdio"
+        if scenario["decision"] == "HOLD":
             if os.getenv("APPROVAL_CHANNEL") in {"email", "telegram"}:
                 channel = os.environ["APPROVAL_CHANNEL"]
                 notifier = ConfiguredNotificationAdapter(channel)
@@ -115,9 +131,18 @@ class DashboardState:
     def log_events(self) -> list[dict]:
         return self.evidence.read_entries()
 
+    def close(self) -> None:
+        self.proxy.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    state = DashboardState()
+    state: DashboardState
 
     def log_message(self, fmt: str, *args: object) -> None:
         print("[dashboard] " + fmt % args)
@@ -172,7 +197,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    load_dotenv()
     port = int(os.getenv("DASHBOARD_PORT", "8765"))
+    DashboardHandler.state = DashboardState(reset_log=os.getenv("DEMO_RESET_LOG", "0") == "1")
     server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
     print(f"AI Chakravyuh dashboard: http://127.0.0.1:{port}")
     print("Demo codes are delivered to the configured channel; mock mode writes them only to this terminal.")
@@ -191,6 +218,7 @@ def main() -> None:
         print("\nDashboard stopped.")
     finally:
         server.server_close()
+        DashboardHandler.state.close()
 
 
 if __name__ == "__main__":

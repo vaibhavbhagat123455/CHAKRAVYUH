@@ -25,8 +25,9 @@ class EvidenceLog:
             raise TypeError("event must be an object")
         event_type = event.get("event_type")
         request_id = event.get("request_id") or f"dashboard-{event.get('event_id', 'event')}"
-        known = {"event_id", "timestamp", "event_type", "request_id", "scenario_id", "decision", "evidence_id", "policy_version", "analyser_version"}
-        payload = {key: value for key, value in event.items() if key not in known}
+        known = {"event_id", "timestamp", "event_type", "request_id", "scenario_id", "decision", "evidence_id", "policy_version", "analyser_version", "payload"}
+        payload = dict(event.get("payload", {})) if isinstance(event.get("payload"), dict) else {}
+        payload.update({key: value for key, value in event.items() if key not in known})
         timestamp = event.get("timestamp")
         # ApprovalService uses an injectable epoch clock for expiry tests. The
         # canonical security log stores UTC ISO timestamps, so convert that
@@ -67,7 +68,8 @@ class EvidenceLog:
         result = replay_log(self.path, verify=True)
         data = result.to_dict()
         data["decisions"] = [
-            {"request_id": item["request_id"], "decision": item["replayed"], "evidence_id": item.get("evidence_id")}
+            {"request_id": item["request_id"], "decision": item["replayed"], "evidence_id": item.get("evidence_id"),
+             **({"final_decision": item["final_decision"]} if item.get("final_decision") else {})}
             for item in data.get("decisions", [])
         ]
         return data

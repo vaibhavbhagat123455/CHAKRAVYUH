@@ -5,13 +5,18 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from core.action import action_digest
+from core.append_log import LogWriter
+from core.config import configured_log_path
 from core.contracts import canonical_json as _shared_canonical_json
 from .notification import MockNotificationAdapter, NotificationAdapter, mask_destination
 
@@ -22,29 +27,23 @@ def canonical_json(value: Any) -> str:
     return _shared_canonical_json(value)
 
 
-def action_digest(request: dict[str, Any]) -> str:
-    if not isinstance(request, dict) or not request.get("request_id") or not request.get("tool"):
-        raise ValueError("Request must contain request_id and tool")
-    if not isinstance(request.get("arguments"), dict):
-        raise ValueError("Request arguments must be a JSON object")
-    action = {"request_id": request["request_id"], "tool": request["tool"], "arguments": request["arguments"]}
-    return hashlib.sha256(canonical_json(action).encode("utf-8")).hexdigest()
-
-
 class ApprovalService:
     def __init__(self, notifier: NotificationAdapter | None = None, *, ttl_seconds: int = 180,
-                 log_path: str | Path = "data/approval-events.jsonl", clock: Callable[[], float] = time.time,
+                 log_path: str | Path | None = None, clock: Callable[[], float] = time.time,
                  code_factory: Callable[[], str] | None = None,
                  resume_callback: Callable[[dict[str, Any]], Any] | None = None,
-                 event_sink: Callable[[dict[str, Any]], Any] | None = None) -> None:
+                 event_sink: Callable[[dict[str, Any]], Any] | None = None,
+                 bridge_secret: str | None = None) -> None:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
         self.notifier = notifier or MockNotificationAdapter()
-        self.ttl_seconds, self.log_path, self.clock = ttl_seconds, Path(log_path), clock
+        self.ttl_seconds, self.log_path, self.clock = ttl_seconds, Path(log_path or configured_log_path()), clock
         self.code_factory = code_factory or (lambda: f"{secrets.randbelow(1_000_000):06d}")
         self.resume_callback = resume_callback
         self.event_sink = event_sink
+        self.bridge_secret = bridge_secret or os.getenv("APPROVAL_BRIDGE_SECRET") or secrets.token_hex(32)
         self._approvals: dict[str, dict[str, Any]] = {}
+        self._release_tokens: dict[str, str] = {}
         self._lock = threading.RLock()
 
     def _record(self, event_type: str, **fields: Any) -> None:
@@ -52,11 +51,31 @@ class ApprovalService:
         if self.event_sink is not None:
             self.event_sink(event)
             return
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        # O_APPEND and a process lock ensure attempts are appended rather than rewritten.
-        line = (canonical_json(event) + "\n").encode("utf-8")
-        with self._lock, self.log_path.open("ab") as stream:
-            stream.write(line)
+        # Standalone ApprovalService instances use the same hash-chain writer as
+        # the dashboard. There is no second, unverifiable approval log anymore.
+        timestamp = datetime.fromtimestamp(float(event["timestamp"]), timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        known = {"event_id", "timestamp", "event_type", "request_id", "scenario_id", "decision", "evidence_id", "policy_version", "analyser_version"}
+        payload = {key: value for key, value in event.items() if key not in known}
+        LogWriter(self.log_path).append(
+            event_type,
+            str(event.get("request_id") or f"approval:{event.get('approval_id', 'unknown')}"),
+            payload,
+            scenario_id=event.get("scenario_id"),
+            decision=event.get("decision"),
+            evidence_id=event.get("evidence_id"),
+            policy_version=event.get("policy_version"),
+            event_id=event["event_id"],
+            timestamp=timestamp,
+        )
+
+    def _release_token(self, approval_id: str, digest: str) -> str:
+        material = f"{approval_id}:{digest}".encode("utf-8")
+        return hmac.new(self.bridge_secret.encode("utf-8"), material, hashlib.sha256).hexdigest()
+
+    def consume_release_token(self, request_id: str) -> str | None:
+        """Return a one-call internal bridge proof for the MCP release method."""
+        with self._lock:
+            return self._release_tokens.pop(request_id, None)
 
     def create_approval(self, request: dict[str, Any], destination: str) -> dict[str, Any]:
         digest = action_digest(request)
@@ -69,7 +88,9 @@ class ApprovalService:
         expires_at = self.clock() + self.ttl_seconds
         record = {"approval_id": approval_id, "request_id": request["request_id"], "action_digest": digest,
                   "code_hash": hashlib.sha256(code.encode()).hexdigest(), "expires_at": expires_at,
-                  "consumed": False, "status": "PENDING", "destination": destination, "request": json.loads(canonical_json(request))}
+                  "consumed": False, "status": "PENDING", "destination": destination,
+                  "request": json.loads(canonical_json(request)),
+                  "release_token": self._release_token(approval_id, digest)}
         with self._lock:
             self._approvals[approval_id] = record
             self._record("APPROVAL_CREATED", approval_id=approval_id, request_id=request["request_id"],
@@ -127,8 +148,13 @@ class ApprovalService:
             # Consume while holding the lock, before invoking any release callback.
             record["consumed"], record["status"] = True, "APPROVED"
             evidence_id = f"ev-{uuid.uuid4().hex}"
+            self._release_tokens[record["request_id"]] = record["release_token"]
             self._record("APPROVAL_VERIFIED", approval_id=approval_id, request_id=record["request_id"], evidence_id=evidence_id)
-        resumed = self.resume_callback(record["request"]) if self.resume_callback else None
+        try:
+            resumed = self.resume_callback(record["request"]) if self.resume_callback else None
+        finally:
+            if not self.resume_callback:
+                self.consume_release_token(record["request_id"])
         return {"approved": True, "decision": "ALLOW", "approval_id": approval_id,
                 "request_id": record["request_id"], "evidence_id": evidence_id, "reason": "approved_exact_action",
                 "resumed": resumed}

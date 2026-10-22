@@ -8,6 +8,7 @@ All four members follow these rules. If a contract must change, open a GitHub is
 - `integration` is the merge and end-to-end testing branch.
 - Each member works on a feature branch and opens a pull request into `integration`.
 - No direct tool, database or external notification call may bypass the checkpoint.
+- The dashboard and any agent client call tools only through the MCP JSON-RPC 2.0 stdio boundary; `tools/approve` is the only release path for a held call.
 - Only synthetic data and simulated tools are allowed in the hackathon demo.
 
 ## Identifiers
@@ -38,6 +39,8 @@ Every tool request receives exactly one of `ALLOW`, `HOLD` or `DENY`.
 - Replay never calls the AI, current time, random numbers or the network, and it must reproduce both the decision and the evidence ID.
 - Verify with `python -m core.verify` and replay with `python -m core.replay`.
 - `LogWriter` verifies the existing chain before appending, so an invalid log cannot be extended.
+- The log is the ring boundary: request, analysis, policy and execution envelopes are written before the next ring consumes them.
+- Real PDF input is inspected and hashed before its extracted text reaches the analyser; fixture PDFs remain synthetic.
 
 ## Policy ownership
 

@@ -1,0 +1,35 @@
+{
+  "entries_checked": 41,
+  "errors": [
+    {
+      "actual": "0ac9a985eeb0e66de58fdd731b3b053ff176095ace8138cc3b9ff43c16ba6e83",
+      "code": "ENTRY_HASH_MISMATCH",
+      "event_id": "evt-000002",
+      "expected": "c5e57221c59edf4364e3bdd8f992e97c81b409a577e59c462192a502d343926f",
+      "line": 2,
+      "message": "entry_hash does not match the canonical event",
+      "sequence": 2
+    },
+    {
+      "actual": "0ac9a985eeb0e66de58fdd731b3b053ff176095ace8138cc3b9ff43c16ba6e83",
+      "code": "PREVIOUS_HASH_MISMATCH",
+      "event_id": "evt-000003",
+      "expected": "c5e57221c59edf4364e3bdd8f992e97c81b409a577e59c462192a502d343926f",
+      "line": 3,
+      "message": "previous_hash does not point at the prior computed entry_hash",
+      "sequence": 3
+    }
+  ],
+  "first_invalid": {
+    "actual": "0ac9a985eeb0e66de58fdd731b3b053ff176095ace8138cc3b9ff43c16ba6e83",
+    "code": "ENTRY_HASH_MISMATCH",
+    "event_id": "evt-000002",
+    "expected": "c5e57221c59edf4364e3bdd8f992e97c81b409a577e59c462192a502d343926f",
+    "line": 2,
+    "message": "entry_hash does not match the canonical event",
+    "sequence": 2
+  },
+  "genesis": "GENESIS_AI_CHAKRAVYUH_V1",
+  "log_path": "docs/demo-evidence/tampered_log.jsonl",
+  "valid": false
+}

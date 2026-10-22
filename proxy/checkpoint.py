@@ -13,6 +13,8 @@ from proxy.policy import (
     get_policy,
     is_allowed_tool,
     is_external_destination,
+    is_high_impact,
+    requires_approval,
 )
 
 # Rule identifiers
@@ -93,6 +95,41 @@ def decide(
             policy_version=policy_version,
             risk_signals=sig_dict,
             rule_id=RULE_R2,
+        )
+
+    # R3: High-impact tool AND (prompt_injection OR goal_drift)
+    if is_high_impact(request.tool, policy) and signals is not None:
+        if signals.prompt_injection or signals.goal_drift:
+            if requires_approval(request.tool, policy):
+                return Decision(
+                    request_id=request.request_id,
+                    decision=HOLD,
+                    evidence_id=evidence_id,
+                    reason=REASON_R3_HIGH_IMPACT_THREAT_HOLD,
+                    policy_version=policy_version,
+                    risk_signals=sig_dict,
+                    rule_id=RULE_R3,
+                )
+            return Decision(
+                request_id=request.request_id,
+                decision=DENY,
+                evidence_id=evidence_id,
+                reason=REASON_R3_HIGH_IMPACT_THREAT_DENY,
+                policy_version=policy_version,
+                risk_signals=sig_dict,
+                rule_id=RULE_R3,
+            )
+
+    # R4: signals is None AND high-impact tool => HOLD
+    if signals is None and is_high_impact(request.tool, policy):
+        return Decision(
+            request_id=request.request_id,
+            decision=HOLD,
+            evidence_id=evidence_id,
+            reason=REASON_R4_MISSING_SIGNALS_HOLD,
+            policy_version=policy_version,
+            risk_signals=sig_dict,
+            rule_id=RULE_R4,
         )
 
     # R7: Default fallback => HOLD

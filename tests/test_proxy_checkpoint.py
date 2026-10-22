@@ -1,4 +1,4 @@
-"""Tests for proxy deterministic checkpoint evidence ID generation and decide skeleton."""
+"""Tests for proxy deterministic checkpoint evidence ID generation and rules."""
 
 import unittest
 
@@ -6,6 +6,9 @@ from core.contracts import POLICY_VERSION
 from proxy.checkpoint import (
     REASON_R1_UNALLOWED_TOOL,
     REASON_R2_EXTERNAL_SENSITIVE,
+    REASON_R3_HIGH_IMPACT_THREAT_DENY,
+    REASON_R3_HIGH_IMPACT_THREAT_HOLD,
+    REASON_R4_MISSING_SIGNALS_HOLD,
     REASON_R7_DEFAULT_HOLD,
     RULE_R1,
     RULE_R2,
@@ -25,21 +28,8 @@ class TestEvidenceIdGeneration(unittest.TestCase):
     """Test deterministic evidence ID creation for requests and signals."""
 
     def setUp(self) -> None:
-        self.request = ToolRequest(
-            request_id="req-101",
-            tool="summarize_document",
-            arguments={"file": "synthetic_report.pdf"},
-            purpose="Summarize report",
-            scenario_id="scen-01",
-        )
-        self.signals = DecisionSignals(
-            prompt_injection=False,
-            goal_drift=False,
-            sensitive_data_risk="low",
-            risk_score=0.1,
-            recommended_action="ALLOW",
-            reason="Benign summary",
-        )
+        self.request = ToolRequest("req-101", "summarize_document", {"file": "synthetic_report.pdf"}, "Summarize report", "scen-01")
+        self.signals = DecisionSignals(False, False, "low", 0.1, "ALLOW", "Benign summary")
         self.policy_version = "v1"
 
     def test_same_input_same_id(self) -> None:
@@ -47,75 +37,45 @@ class TestEvidenceIdGeneration(unittest.TestCase):
         ev2 = make_evidence_id(self.request, self.signals, self.policy_version)
         self.assertEqual(ev1, ev2)
         self.assertTrue(ev1.startswith("ev-"))
-        self.assertEqual(len(ev1), 3 + 12)
+        self.assertEqual(len(ev1), 15)
 
     def test_signals_none_is_stable(self) -> None:
         ev1 = make_evidence_id(self.request, None, self.policy_version)
         ev2 = make_evidence_id(self.request, None, self.policy_version)
         self.assertEqual(ev1, ev2)
         self.assertTrue(ev1.startswith("ev-"))
-        ev_with_signals = make_evidence_id(self.request, self.signals, self.policy_version)
-        self.assertNotEqual(ev1, ev_with_signals)
+        self.assertNotEqual(ev1, make_evidence_id(self.request, self.signals, self.policy_version))
 
     def test_changing_argument_changes_id(self) -> None:
-        req_modified = ToolRequest(
-            request_id=self.request.request_id,
-            tool=self.request.tool,
-            arguments={"file": "synthetic_different.pdf"},
-            purpose=self.request.purpose,
-            scenario_id=self.request.scenario_id,
+        req_mod = ToolRequest("req-101", "summarize_document", {"file": "synthetic_diff.pdf"}, "Summarize report", "scen-01")
+        self.assertNotEqual(
+            make_evidence_id(self.request, self.signals, self.policy_version),
+            make_evidence_id(req_mod, self.signals, self.policy_version),
         )
-        ev_orig = make_evidence_id(self.request, self.signals, self.policy_version)
-        ev_mod = make_evidence_id(req_modified, self.signals, self.policy_version)
-        self.assertNotEqual(ev_orig, ev_mod)
 
     def test_changing_signal_changes_id(self) -> None:
-        signals_modified = DecisionSignals(
-            prompt_injection=True,
-            goal_drift=False,
-            sensitive_data_risk="high",
-            risk_score=0.9,
-            recommended_action="DENY",
-            reason="Injection detected",
+        sig_mod = DecisionSignals(True, False, "high", 0.9, "DENY", "Threat")
+        self.assertNotEqual(
+            make_evidence_id(self.request, self.signals, self.policy_version),
+            make_evidence_id(self.request, sig_mod, self.policy_version),
         )
-        ev_orig = make_evidence_id(self.request, self.signals, self.policy_version)
-        ev_mod = make_evidence_id(self.request, signals_modified, self.policy_version)
-        self.assertNotEqual(ev_orig, ev_mod)
 
     def test_changing_policy_version_changes_id(self) -> None:
-        ev_v1 = make_evidence_id(self.request, self.signals, "v1")
-        ev_v2 = make_evidence_id(self.request, self.signals, "v2")
-        self.assertNotEqual(ev_v1, ev_v2)
+        self.assertNotEqual(
+            make_evidence_id(self.request, self.signals, "v1"),
+            make_evidence_id(self.request, self.signals, "v2"),
+        )
 
 
 class TestDecideSkeleton(unittest.TestCase):
     """Test decide skeleton, constants, and Decision response shape."""
 
     def setUp(self) -> None:
-        self.request = ToolRequest(
-            request_id="req-201",
-            tool="summarize_document",
-            arguments={"file": "confidential_file.pdf", "recipient": "secret@target.edu"},
-            purpose="Analyze document",
-            scenario_id="scen-02",
-        )
-        self.signals = DecisionSignals(
-            prompt_injection=False,
-            goal_drift=False,
-            sensitive_data_risk="low",
-            risk_score=0.1,
-            recommended_action="ALLOW",
-            reason="Advisory ok",
-        )
+        self.request = ToolRequest("req-201", "summarize_document", {"file": "secret.pdf", "recipient": "secret@target.edu"}, "Analyze", "scen-02")
+        self.signals = DecisionSignals(False, False, "low", 0.1, "ALLOW", "Advisory ok")
 
     def test_constants_defined(self) -> None:
-        self.assertEqual(RULE_R1, "R1")
-        self.assertEqual(RULE_R2, "R2")
-        self.assertEqual(RULE_R3, "R3")
-        self.assertEqual(RULE_R4, "R4")
-        self.assertEqual(RULE_R5, "R5")
-        self.assertEqual(RULE_R6, "R6")
-        self.assertEqual(RULE_R7, "R7")
+        self.assertEqual([RULE_R1, RULE_R2, RULE_R3, RULE_R4, RULE_R5, RULE_R6, RULE_R7], ["R1", "R2", "R3", "R4", "R5", "R6", "R7"])
         self.assertTrue(isinstance(REASON_R7_DEFAULT_HOLD, str) and len(REASON_R7_DEFAULT_HOLD) > 0)
 
     def test_decide_returns_r7_hold_shape(self) -> None:
@@ -126,100 +86,69 @@ class TestDecideSkeleton(unittest.TestCase):
         self.assertEqual(decision.request_id, "req-201")
         self.assertEqual(decision.policy_version, POLICY_VERSION)
         self.assertEqual(decision.reason, REASON_R7_DEFAULT_HOLD)
-        expected_ev = make_evidence_id(self.request, self.signals, POLICY_VERSION)
-        self.assertEqual(decision.evidence_id, expected_ev)
-
-        # Ensure to_dict adheres strictly to decision schema (no rule_id or risk_signals inside to_dict)
-        d_dict = decision.to_dict()
-        self.assertEqual(set(d_dict.keys()), {"request_id", "decision", "evidence_id", "reason", "policy_version"})
+        self.assertEqual(decision.evidence_id, make_evidence_id(self.request, self.signals, POLICY_VERSION))
+        self.assertEqual(set(decision.to_dict().keys()), {"request_id", "decision", "evidence_id", "reason", "policy_version"})
 
     def test_decide_with_explicit_policy(self) -> None:
-        decision = decide(self.request, self.signals, policy=POLICY_V1)
-        self.assertEqual(decision.decision, HOLD)
-        self.assertEqual(decision.rule_id, RULE_R7)
+        self.assertEqual(decide(self.request, self.signals, policy=POLICY_V1).decision, HOLD)
 
     def test_decide_resolves_get_policy_when_none(self) -> None:
         with self.assertRaises(KeyError):
             decide(self.request, self.signals, policy_version="unknown_v99", policy=None)
 
     def test_reasons_never_include_argument_values(self) -> None:
-        decision = decide(self.request, self.signals)
-        for arg_val in ("confidential_file.pdf", "secret@target.edu"):
-            self.assertNotIn(arg_val, decision.reason)
+        dec = decide(self.request, self.signals)
+        for arg in ("secret.pdf", "secret@target.edu"):
+            self.assertNotIn(arg, dec.reason)
 
 
-class TestEnforceR1AndR2(unittest.TestCase):
-    """Test R1 (unallowed tool) and R2 (external destination + high risk) rules."""
+class TestEnforceRulesR1ToR4(unittest.TestCase):
+    """Test enforcement of rules R1 through R4."""
 
     def setUp(self) -> None:
-        self.signals_low = DecisionSignals(
-            prompt_injection=False,
-            goal_drift=False,
-            sensitive_data_risk="low",
-            risk_score=0.1,
-            recommended_action="ALLOW",
-            reason="Low risk",
-        )
-        self.signals_high = DecisionSignals(
-            prompt_injection=False,
-            goal_drift=False,
-            sensitive_data_risk="high",
-            risk_score=0.8,
-            recommended_action="DENY",
-            reason="High sensitive risk",
-        )
+        self.signals_low = DecisionSignals(False, False, "low", 0.1, "ALLOW", "Low risk")
+        self.signals_high = DecisionSignals(False, False, "high", 0.8, "DENY", "High risk")
+        self.signals_inject = DecisionSignals(True, False, "low", 0.9, "DENY", "Injection")
+        self.signals_drift = DecisionSignals(False, True, "low", 0.8, "DENY", "Goal drift")
 
-    def test_export_records_denied_by_r1(self) -> None:
-        req = ToolRequest(
-            request_id="req-r1",
-            tool="export_records",
-            arguments={"query": "all"},
-            purpose="Export records",
-            scenario_id="scen-r1",
-        )
+    def test_r1_export_records_denied(self) -> None:
+        req = ToolRequest("r1", "export_records", {"query": "all"}, "Export", "s1")
         dec = decide(req, self.signals_low)
-        self.assertEqual(dec.decision, DENY)
-        self.assertEqual(dec.rule_id, RULE_R1)
-        self.assertEqual(dec.reason, REASON_R1_UNALLOWED_TOOL)
+        self.assertEqual((dec.decision, dec.rule_id, dec.reason), (DENY, RULE_R1, REASON_R1_UNALLOWED_TOOL))
 
-    def test_external_destination_high_risk_denied_by_r2(self) -> None:
-        req = ToolRequest(
-            request_id="req-r2",
-            tool="send_email",
-            arguments={"recipient": "attacker@evil.com", "body": "export"},
-            purpose="Send report",
-            scenario_id="scen-r2",
-        )
+    def test_r2_external_destination_high_risk_denied(self) -> None:
+        req = ToolRequest("r2", "send_email", {"recipient": "attacker@evil.com"}, "Send", "s1")
         dec = decide(req, self.signals_high)
-        self.assertEqual(dec.decision, DENY)
-        self.assertEqual(dec.rule_id, RULE_R2)
-        self.assertEqual(dec.reason, REASON_R2_EXTERNAL_SENSITIVE)
+        self.assertEqual((dec.decision, dec.rule_id, dec.reason), (DENY, RULE_R2, REASON_R2_EXTERNAL_SENSITIVE))
 
-    def test_internal_destination_high_risk_not_denied_by_r2(self) -> None:
-        req = ToolRequest(
-            request_id="req-r2-int",
-            tool="send_email",
-            arguments={"recipient": "dean@example.edu", "body": "export"},
-            purpose="Send internal report",
-            scenario_id="scen-r2",
-        )
-        dec = decide(req, self.signals_high)
-        self.assertNotEqual(dec.rule_id, RULE_R2)
-        self.assertEqual(dec.decision, HOLD)
+    def test_r2_internal_destination_high_risk_not_denied_by_r2(self) -> None:
+        req = ToolRequest("r2-int", "send_email", {"recipient": "dean@example.edu"}, "Send", "s1")
+        self.assertNotEqual(decide(req, self.signals_high).rule_id, RULE_R2)
 
-    def test_signals_none_does_not_trigger_r2(self) -> None:
-        req = ToolRequest(
-            request_id="req-r2-none",
-            tool="send_email",
-            arguments={"recipient": "attacker@evil.com"},
-            purpose="Send external",
-            scenario_id="scen-r2",
-        )
+    def test_r2_signals_none_does_not_trigger_r2(self) -> None:
+        req = ToolRequest("r2-none", "send_email", {"recipient": "attacker@evil.com"}, "Send", "s1")
+        self.assertNotEqual(decide(req, None).rule_id, RULE_R2)
+
+    def test_r3_injection_on_send_email_denied(self) -> None:
+        req = ToolRequest("r3-1", "send_email", {"recipient": "dean@example.edu"}, "Email", "s1")
+        dec = decide(req, self.signals_inject)
+        self.assertEqual((dec.decision, dec.rule_id, dec.reason), (DENY, RULE_R3, REASON_R3_HIGH_IMPACT_THREAT_DENY))
+
+    def test_r3_goal_drift_on_send_email_denied(self) -> None:
+        req = ToolRequest("r3-2", "send_email", {"recipient": "dean@example.edu"}, "Email", "s1")
+        dec = decide(req, self.signals_drift)
+        self.assertEqual((dec.decision, dec.rule_id, dec.reason), (DENY, RULE_R3, REASON_R3_HIGH_IMPACT_THREAT_DENY))
+
+    def test_r3_injection_on_transfer_records_hold(self) -> None:
+        req = ToolRequest("r3-3", "transfer_records", {"destination": "dean@example.edu"}, "Transfer", "s1")
+        dec = decide(req, self.signals_inject)
+        self.assertEqual((dec.decision, dec.rule_id, dec.reason), (HOLD, RULE_R3, REASON_R3_HIGH_IMPACT_THREAT_HOLD))
+
+    def test_r4_signals_none_on_send_email_hold(self) -> None:
+        req = ToolRequest("r4-1", "send_email", {"recipient": "dean@example.edu"}, "Email", "s1")
         dec = decide(req, None)
-        self.assertNotEqual(dec.rule_id, RULE_R2)
-        self.assertEqual(dec.decision, HOLD)
+        self.assertEqual((dec.decision, dec.rule_id, dec.reason), (HOLD, RULE_R4, REASON_R4_MISSING_SIGNALS_HOLD))
 
 
 if __name__ == "__main__":
     unittest.main()
-

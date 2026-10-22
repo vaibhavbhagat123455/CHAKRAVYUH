@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from core.contracts import POLICY_VERSION
 from proxy.canonical import canonical_json, sha256_hex
+from proxy.events import CHECKPOINT_DECISION, emit
 from proxy.models import (
     ALLOW,
     BLOCK,
@@ -193,3 +194,34 @@ def layers(
         results.append(LayerResult(LAYER_DRISHTI, PASS, "No anomalous threats observed", ev_id))
 
     return results
+
+
+class PolicyDecisionEngine:
+    """Stateful decision engine combining pure decide() with audit event logging."""
+
+    def __init__(self, policy_version: str = POLICY_VERSION, log: Optional[Any] = None) -> None:
+        self.policy_version = policy_version
+        self.policy = get_policy(policy_version)
+        self.log = log
+
+    def evaluate(
+        self,
+        request: ToolRequest,
+        signals: Optional[DecisionSignals],
+    ) -> Decision:
+        """Evaluate request through checkpoint and log CHECKPOINT_DECISION event."""
+        decision = decide(request, signals, policy_version=self.policy_version, policy=self.policy)
+
+        if self.log is not None:
+            sig_dict = signals.to_dict() if signals is not None else None
+            payload = {
+                "decision": decision.decision,
+                "evidence_id": decision.evidence_id,
+                "rule_id": decision.rule_id,
+                "reason": decision.reason,
+                "policy_version": decision.policy_version,
+                "signals": sig_dict,
+            }
+            emit(self.log, CHECKPOINT_DECISION, request.request_id, payload)
+
+        return decision

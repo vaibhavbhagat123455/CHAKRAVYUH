@@ -10,6 +10,7 @@ from proxy.config import ProxyConfig
 from proxy.events import (
     ANALYSIS_RECORDED,
     CHECKPOINT_DECISION,
+    HOLD_CREATED,
     LAYER_EVALUATED,
     REQUEST_RECEIVED,
     TOOL_BLOCKED,
@@ -18,6 +19,7 @@ from proxy.events import (
     TOOL_TIMEOUT,
     emit,
 )
+from proxy.pending import PendingStore
 from proxy.interfaces import (
     Analyser,
     ApprovalService,
@@ -41,6 +43,7 @@ class ProxyServer:
         approval: Optional[ApprovalService] = None,
         config: Optional[ProxyConfig] = None,
         clock: Optional[Clock] = None,
+        pending_store: Optional[PendingStore] = None,
     ) -> None:
         self.log = log
         self.analyser = analyser
@@ -50,6 +53,11 @@ class ProxyServer:
         self.clock = clock
         self.policy_version = POLICY_VERSION
         self.policy = get_policy(self.policy_version)
+        self.pending_store = (
+            pending_store
+            if pending_store is not None
+            else PendingStore(clock=self.clock, hold_ttl_seconds=self.config.hold_ttl_seconds)
+        )
 
     def handle_tool_call(
         self,
@@ -184,7 +192,42 @@ class ProxyServer:
                 },
             )
 
-        # Non-ALLOW non-DENY response (e.g. HOLD placeholder for now)
+        # 8. Place HOLD decisions in PendingStore and emit HOLD_CREATED
+        if decision.decision == HOLD:
+            approval_id = f"appr-{request.request_id}"
+            if self.approval is not None:
+                res = self.approval.create_approval(request)
+                if isinstance(res, dict) and "approval_id" in res:
+                    approval_id = res["approval_id"]
+                elif isinstance(res, str):
+                    approval_id = res
+
+            record = self.pending_store.add(
+                request=request,
+                evidence_id=decision.evidence_id,
+                signals=signals,
+                approval_id=approval_id,
+            )
+
+            emit(
+                self.log,
+                HOLD_CREATED,
+                request.request_id,
+                {
+                    "approval_id": approval_id,
+                    "evidence_id": decision.evidence_id,
+                    "action_digest": record.action_digest,
+                    "tool": request.tool,
+                },
+            )
+
+            return {
+                "decision": HOLD,
+                "evidence_id": decision.evidence_id,
+                "approval_id": approval_id,
+            }
+
+        # Non-ALLOW non-DENY non-HOLD response
         return {
             "decision": decision.decision,
             "evidence_id": decision.evidence_id,

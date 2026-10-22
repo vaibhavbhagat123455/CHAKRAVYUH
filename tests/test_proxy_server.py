@@ -9,7 +9,7 @@ import unittest
 from proxy.config import ProxyConfig
 from proxy.jsonrpc import INVALID_PARAMS, PARSE_ERROR
 from proxy.models import ALLOW, DENY, HOLD, ToolRequest
-from proxy.server import ProxyServer, build_server, main
+from proxy.server import ProxyServer, build_server, build_server_from_config, main
 from tests.fakes import FakeAnalyser, FakeLog, SpyExecutor
 
 
@@ -164,5 +164,78 @@ class TestSubprocessExecution(unittest.TestCase):
         self.assertIn("result", resp)
 
 
+class TestBuildServerFromConfig(unittest.TestCase):
+    """Test build_server_from_config target loading and fallback notices."""
+
+    def test_fallbacks_announced_on_stderr(self) -> None:
+        err_stream = io.StringIO()
+        cfg = ProxyConfig()
+        server = build_server_from_config(cfg, stderr=err_stream)
+        err_msg = err_stream.getvalue().lower()
+        self.assertIn("log", err_msg)
+        self.assertIn("analyser", err_msg)
+        self.assertIn("falling back", err_msg)
+
+        # High-impact tool with no-op analyser (None signals) results in HOLD
+        req = ToolRequest(
+            request_id="req-fallback-1",
+            tool="transfer_records",
+            arguments={"destination": "archive@college.example"},
+            purpose="Transfer",
+            scenario_id="scen-fallback",
+        )
+        resp = server.handle_tool_call(req)
+        self.assertEqual(resp["decision"], HOLD)
+
+    def test_configured_targets_used_without_fallback_notices(self) -> None:
+        err_stream = io.StringIO()
+        cfg = ProxyConfig(
+            log_target="tests.fakes:FakeLog",
+            analyser_target="tests.fakes:FakeAnalyser",
+        )
+        server = build_server_from_config(cfg, stderr=err_stream)
+        # No fallback notice should be emitted when targets are configured
+        self.assertEqual(err_stream.getvalue(), "")
+
+        req = ToolRequest(
+            request_id="req-targets-1",
+            tool="summarize_document",
+            arguments={"file": "synthetic_report.pdf"},
+            purpose="Safe",
+            scenario_id="scen-targets",
+        )
+        resp = server.handle_tool_call(req)
+        self.assertIn("result", resp)
+        self.assertEqual(resp["result"]["decision"], ALLOW)
+
+
+    def test_approval_targets_wired_and_called(self) -> None:
+        import tests.fakes as tf
+        calls = []
+        tf._fake_create = lambda req: (calls.append(("create", req.tool)) or {"approval_id": "appr-custom-123"})
+        tf._fake_verify = lambda appr_id: (calls.append(("verify", appr_id)) or {"decision": "APPROVED", "approver": "sec-lead", "reason": "ok"})
+        cfg = ProxyConfig(
+            log_target="tests.fakes:FakeLog",
+            analyser_target="tests.fakes:FakeAnalyser",
+            approval_create_target="tests.fakes:_fake_create",
+            approval_verify_target="tests.fakes:_fake_verify",
+        )
+        server = build_server_from_config(cfg)
+        req = ToolRequest("req-appr-target", "transfer_records", {"destination": "archive@college.example"}, "Transfer", "scen-appr")
+        res = server.handle_tool_call(req)
+        self.assertEqual(res["decision"], HOLD)
+        self.assertEqual(res["approval_id"], "appr-custom-123")
+        self.assertEqual(calls, [("create", "transfer_records")])
+
+    def test_cli_flags_parsed(self) -> None:
+        from proxy.server import _parse_cli_args
+        cfg, _ = _parse_cli_args(["--log", "my.log:fn", "--analyser", "my.ai:fn", "--approval-create", "my.appr:create", "--approval-verify", "my.appr:verify"])
+        self.assertEqual(cfg.log_target, "my.log:fn")
+        self.assertEqual(cfg.analyser_target, "my.ai:fn")
+        self.assertEqual(cfg.approval_create_target, "my.appr:create")
+        self.assertEqual(cfg.approval_verify_target, "my.appr:verify")
+
+
 if __name__ == "__main__":
     unittest.main()
+

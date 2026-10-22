@@ -10,20 +10,17 @@ import time
 from typing import Any, Dict, List, Optional, TextIO
 
 from core.contracts import POLICY_VERSION, validate_event_type
+from proxy.adapters import CallableAnalyser, CallableApproval, CallableLogWriter, load_callable
 from proxy.canonical import action_digest
 from proxy.checkpoint import decide, layers
 from proxy.config import ProxyConfig
 from proxy.events import (
-    ANALYSIS_RECORDED, CHECKPOINT_DECISION, HOLD_CREATED, HOLD_DENIED,
-    HOLD_EXPIRED, HOLD_RELEASED, LAYER_EVALUATED, REQUEST_RECEIVED,
-    TOOL_BLOCKED, TOOL_COMPLETED, TOOL_STARTED, TOOL_TIMEOUT, emit,
+    ANALYSIS_RECORDED, CHECKPOINT_DECISION, HOLD_CREATED, HOLD_DENIED, HOLD_EXPIRED,
+    HOLD_RELEASED, LAYER_EVALUATED, REQUEST_RECEIVED, TOOL_BLOCKED, TOOL_COMPLETED, TOOL_STARTED, TOOL_TIMEOUT, emit,
 )
 from proxy.executor import SimulatedExecutor
 from proxy.interfaces import Analyser, ApprovalService, Clock, LogWriter, ToolExecutor
-from proxy.jsonrpc import (
-    INTERNAL_ERROR, POLICY_DENIED, TOOL_FAILED, RpcError,
-    error_response, parse_request, success_response, validate_request,
-)
+from proxy.jsonrpc import INTERNAL_ERROR, POLICY_DENIED, TOOL_FAILED, RpcError, error_response, parse_request, success_response, validate_request
 from proxy.models import ALLOW, DENY, HOLD, ApprovalResult, DecisionSignals, ToolRequest
 from proxy.pending import PendingRecord, PendingStore
 from proxy.policy import PolicyConfig, get_policy, load_policy
@@ -43,6 +40,11 @@ class _DefaultAnalyser(Analyser):
         return {"prompt_injection": False, "goal_drift": False, "sensitive_data_risk": "low", "risk_score": 0.05, "recommended_action": "ALLOW", "reason": "Default analyser"}
 
 
+class _NoOpAnalyser(Analyser):
+    def analyse_tool_call(self, tool_call: Dict[str, Any], original_goal: str) -> Optional[Dict[str, Any]]:
+        return None
+
+
 class _FixtureAnalyser(Analyser):
     def __init__(self, fixtures: Dict[str, Any]) -> None: self.fixtures = fixtures
     def analyse_tool_call(self, tool_call: Dict[str, Any], original_goal: str) -> Dict[str, Any]:
@@ -60,9 +62,8 @@ class ProxyServer:
         clock: Optional[Clock] = None, pending_store: Optional[PendingStore] = None, policy: Optional[PolicyConfig] = None,
     ) -> None:
         self.log, self.analyser, self.executor = log, analyser, executor
-        self.approval, self.clock = approval, clock
+        self.approval, self.clock, self.policy_version = approval, clock, POLICY_VERSION
         self.config = config if config is not None else ProxyConfig()
-        self.policy_version = POLICY_VERSION
         self.policy = policy if policy is not None else get_policy(self.policy_version)
         self.pending_store = pending_store or PendingStore(clock=clock, hold_ttl_seconds=self.config.hold_ttl_seconds)
 
@@ -84,11 +85,13 @@ class ProxyServer:
         analysis_payload: Dict[str, Any] = {"analyser_failed": False}
         try:
             raw = self.analyser.analyse_tool_call(request.to_dict(), request.purpose)
-            if not isinstance(raw, dict): raise ValueError("Expected dict")
-            clean = {k: v for k, v in raw.items() if k != "model_version"}
-            signals = DecisionSignals.from_dict(clean)
-            analysis_payload["signals"] = signals.to_dict()
-            if "model_version" in raw: analysis_payload["model_version"] = raw["model_version"]
+            if raw is not None:
+                clean = {k: v for k, v in raw.items() if k != "model_version"}
+                signals = DecisionSignals.from_dict(clean)
+                analysis_payload["signals"] = signals.to_dict()
+                if "model_version" in raw: analysis_payload["model_version"] = raw["model_version"]
+            else:
+                signals, analysis_payload["signals"] = None, None
         except Exception as exc:
             analysis_payload.update({"analyser_failed": True, "signals": None, "error_type": type(exc).__name__})
         emit(self.log, ANALYSIS_RECORDED, request.request_id, analysis_payload)
@@ -97,20 +100,13 @@ class ProxyServer:
         for lr in layers(request, signals, decision, self.policy):
             emit(self.log, LAYER_EVALUATED, request.request_id, lr.to_dict())
         emit(self.log, CHECKPOINT_DECISION, request.request_id, {
-            "decision": decision.decision, "evidence_id": decision.evidence_id,
-            "rule_id": decision.rule_id, "reason": decision.reason, "policy_version": decision.policy_version,
-            "signals": signals.to_dict() if signals is not None else None,
+            "decision": decision.decision, "evidence_id": decision.evidence_id, "rule_id": decision.rule_id,
+            "reason": decision.reason, "policy_version": decision.policy_version, "signals": signals.to_dict() if signals is not None else None,
         })
 
         if decision.decision == DENY:
-            emit(self.log, TOOL_BLOCKED, request.request_id, {
-                "decision": decision.decision, "evidence_id": decision.evidence_id,
-                "rule_id": decision.rule_id, "reason": decision.reason, "tool": request.tool,
-            })
-            return error_response(eff_id, POLICY_DENIED, decision.reason, data={
-                "evidence_id": decision.evidence_id, "reason": decision.reason,
-                "decision": decision.decision, "rule_id": decision.rule_id,
-            })
+            emit(self.log, TOOL_BLOCKED, request.request_id, {"decision": DENY, "evidence_id": decision.evidence_id, "rule_id": decision.rule_id, "reason": decision.reason, "tool": request.tool})
+            return error_response(eff_id, POLICY_DENIED, decision.reason, data={"evidence_id": decision.evidence_id, "reason": decision.reason, "decision": DENY, "rule_id": decision.rule_id})
         if decision.decision == ALLOW:
             return self._execute_and_contain(request.request_id, request.tool, request.arguments, decision.evidence_id, eff_id, auth_token=decision)
         if decision.decision == HOLD:
@@ -119,10 +115,7 @@ class ProxyServer:
                 res = self.approval.create_approval(request)
                 appr_id = res.get("approval_id", appr_id) if isinstance(res, dict) else str(res)
             rec = self.pending_store.add(request, decision.evidence_id, signals, appr_id)
-            emit(self.log, HOLD_CREATED, request.request_id, {
-                "approval_id": appr_id, "evidence_id": decision.evidence_id,
-                "action_digest": rec.action_digest, "tool": request.tool,
-            })
+            emit(self.log, HOLD_CREATED, request.request_id, {"approval_id": appr_id, "evidence_id": decision.evidence_id, "action_digest": rec.action_digest, "tool": request.tool})
             return {"decision": HOLD, "evidence_id": decision.evidence_id, "approval_id": appr_id}
         return {"decision": decision.decision, "evidence_id": decision.evidence_id, "rule_id": decision.rule_id, "reason": decision.reason, "policy_version": decision.policy_version}
 
@@ -167,34 +160,57 @@ def build_server(
 ) -> ProxyServer:
     """Factory creating a fully configured ProxyServer instance."""
     cfg = config if config is not None else ProxyConfig.from_env()
-    l = log if log is not None else _MemoryLog()
-    e = executor if executor is not None else SimulatedExecutor(timeout_seconds=cfg.tool_timeout_seconds)
-    a = analyser if analyser is not None else _DefaultAnalyser()
-    pol = policy if policy is not None else (load_policy(cfg.policy_file) if cfg.policy_file else None)
-    return ProxyServer(log=l, analyser=a, executor=e, approval=approval, config=cfg, clock=clock, policy=pol)
+    return ProxyServer(
+        log=log if log is not None else _MemoryLog(),
+        analyser=analyser if analyser is not None else _DefaultAnalyser(),
+        executor=executor if executor is not None else SimulatedExecutor(timeout_seconds=cfg.tool_timeout_seconds),
+        approval=approval, config=cfg, clock=clock,
+        policy=policy if policy is not None else (load_policy(cfg.policy_file) if cfg.policy_file else None),
+    )
 
 
-def _parse_cli_args(argv: List[str]) -> tuple[ProxyConfig, Optional[Analyser], Optional[PolicyConfig]]:
+def build_server_from_config(config: ProxyConfig, analyser: Optional[Analyser] = None, stderr: Optional[TextIO] = None) -> ProxyServer:
+    """Build a ProxyServer using configured targets or announce fallback notices."""
+    err = stderr or sys.stderr
+    log = None
+    if config.log_target:
+        raw_l = load_callable(config.log_target)
+        log = raw_l() if isinstance(raw_l, type) and hasattr(raw_l, "append_event") else CallableLogWriter(raw_l)
+    if log is None: print("Notice: Falling back to in-memory log", file=err)
+
+    if analyser is None:
+        if config.analyser_target:
+            raw_a = load_callable(config.analyser_target)
+            analyser = raw_a() if isinstance(raw_a, type) and hasattr(raw_a, "analyse_tool_call") else CallableAnalyser(raw_a)
+        else:
+            print("Notice: Falling back to no-op analyser", file=err)
+            analyser = _NoOpAnalyser()
+
+    approval = CallableApproval(load_callable(config.approval_create_target), load_callable(config.approval_verify_target)) if (config.approval_create_target and config.approval_verify_target) else None
+    return build_server(log=log, analyser=analyser, approval=approval, config=config)
+
+
+def _parse_cli_args(argv: List[str]) -> tuple[ProxyConfig, Optional[Analyser]]:
     parser = argparse.ArgumentParser(description="AI Chakravyuh MCP Proxy Server")
-    parser.add_argument("--tool-timeout", type=float, default=None)
-    parser.add_argument("--hold-ttl", type=int, default=None)
-    parser.add_argument("--policy-file", type=str, default=None)
-    parser.add_argument("--analyser-fixture", type=str, default=None)
+    for f in ("--tool-timeout", "--hold-ttl", "--policy-file", "--analyser-fixture", "--log", "--analyser", "--approval-create", "--approval-verify"):
+        parser.add_argument(f, type=float if f == "--tool-timeout" else (int if f == "--hold-ttl" else str), default=None)
     args = parser.parse_args(argv)
-
     base = ProxyConfig.from_env()
     cfg = ProxyConfig(
-        tool_timeout_seconds=args.tool_timeout if args.tool_timeout is not None else base.tool_timeout_seconds,
-        hold_ttl_seconds=args.hold_ttl if args.hold_ttl is not None else base.hold_ttl_seconds,
-        policy_file=args.policy_file if args.policy_file is not None else base.policy_file,
+        tool_timeout_seconds=args.tool_timeout or base.tool_timeout_seconds,
+        hold_ttl_seconds=args.hold_ttl or base.hold_ttl_seconds,
+        policy_file=args.policy_file or base.policy_file,
+        log_target=args.log or base.log_target,
+        analyser_target=args.analyser or base.analyser_target,
+        approval_create_target=args.approval_create or base.approval_create_target,
+        approval_verify_target=args.approval_verify or base.approval_verify_target,
     )
-    pol = load_policy(cfg.policy_file) if cfg.policy_file else None
-    analyser: Optional[Analyser] = None
+    analyser = None
     if args.analyser_fixture:
-        raw_fix = args.analyser_fixture.strip()
-        data = json.load(open(raw_fix, "r", encoding="utf-8")) if os.path.exists(raw_fix) else json.loads(raw_fix)
+        raw = args.analyser_fixture.strip()
+        data = json.load(open(raw, "r", encoding="utf-8")) if os.path.exists(raw) else json.loads(raw)
         analyser = _FixtureAnalyser(data)
-    return cfg, analyser, pol
+    return cfg, analyser
 
 
 def main(argv: Optional[List[str]] = None, stdin: Optional[TextIO] = None, stdout: Optional[TextIO] = None, stderr: Optional[TextIO] = None) -> int:
@@ -203,24 +219,24 @@ def main(argv: Optional[List[str]] = None, stdin: Optional[TextIO] = None, stdou
     in_s, out_s, err_s = stdin or sys.stdin, stdout or sys.stdout, stderr or sys.stderr
 
     try:
-        cfg, analyser, pol = _parse_cli_args(args_list)
+        cfg, analyser = _parse_cli_args(args_list)
     except Exception as exc:
         print(f"CLI configuration error: {exc}", file=err_s)
         return 1
 
-    server = build_server(config=cfg, analyser=analyser, policy=pol)
+    server = build_server_from_config(cfg, analyser=analyser, stderr=err_s)
     for line in in_s:
         try:
             raw = parse_request(line)
             rpc_id, req = validate_request(raw)
             resp = server.handle_tool_call(req, rpc_id=rpc_id)
         except RpcError as err:
-            print(f"RPC error: {err}", file=err_s)
-            resp = err.to_dict()
+            print(f"RPC error: {err}", file=err_s); resp = err.to_dict()
         except Exception as exc:
-            print(f"Internal error: {exc}", file=err_s)
-            resp = error_response(None, INTERNAL_ERROR, str(exc))
+            print(f"Internal error: {exc}", file=err_s); resp = error_response(None, INTERNAL_ERROR, str(exc))
 
+        if isinstance(resp, dict) and "jsonrpc" not in resp:
+            resp = success_response(rpc_id, resp)
         out_s.write(json.dumps(resp) + "\n")
         out_s.flush()
     return 0

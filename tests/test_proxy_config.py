@@ -13,23 +13,39 @@ class TestProxyConfig(unittest.TestCase):
         self.assertEqual(cfg.tool_timeout_seconds, 5.0)
         self.assertEqual(cfg.hold_ttl_seconds, 120)
         self.assertIsNone(cfg.policy_file)
+        self.assertIsNone(cfg.log_target)
+        self.assertIsNone(cfg.analyser_target)
+        self.assertIsNone(cfg.approval_create_target)
+        self.assertIsNone(cfg.approval_verify_target)
 
     def test_from_env_defaults(self) -> None:
         cfg = ProxyConfig.from_env({})
         self.assertEqual(cfg.tool_timeout_seconds, 5.0)
         self.assertEqual(cfg.hold_ttl_seconds, 120)
         self.assertIsNone(cfg.policy_file)
+        self.assertIsNone(cfg.log_target)
+        self.assertIsNone(cfg.analyser_target)
+        self.assertIsNone(cfg.approval_create_target)
+        self.assertIsNone(cfg.approval_verify_target)
 
     def test_from_env_custom_values(self) -> None:
         env = {
             "CHAKRAVYUH_TOOL_TIMEOUT": "2.5",
             "CHAKRAVYUH_HOLD_TTL": "60",
             "CHAKRAVYUH_POLICY_FILE": "/path/to/custom_policy.json",
+            "CHAKRAVYUH_LOG": "pkg.log:append_event",
+            "CHAKRAVYUH_ANALYSER": "pkg.ai:analyse",
+            "CHAKRAVYUH_APPROVAL_CREATE": "pkg.appr:create",
+            "CHAKRAVYUH_APPROVAL_VERIFY": "pkg.appr:verify",
         }
         cfg = ProxyConfig.from_env(env)
         self.assertEqual(cfg.tool_timeout_seconds, 2.5)
         self.assertEqual(cfg.hold_ttl_seconds, 60)
         self.assertEqual(cfg.policy_file, "/path/to/custom_policy.json")
+        self.assertEqual(cfg.log_target, "pkg.log:append_event")
+        self.assertEqual(cfg.analyser_target, "pkg.ai:analyse")
+        self.assertEqual(cfg.approval_create_target, "pkg.appr:create")
+        self.assertEqual(cfg.approval_verify_target, "pkg.appr:verify")
 
     def test_non_positive_values_raise_value_error(self) -> None:
         with self.assertRaises(ValueError):

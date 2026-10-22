@@ -174,6 +174,9 @@ TOOL_BLOCKED
 TOOL_TIMEOUT
 CONTAINMENT
 SCENARIO_END
+SCENARIO_DECISION
+APPROVED_RELEASE
+PDF_INSPECTED
 ```
 
 Approval events are deliberately distinct so the UI and jury can show exactly which approval step happened.
@@ -199,12 +202,15 @@ Approval events are deliberately distinct so the UI and jury can show exactly wh
 | `TOOL_TIMEOUT` | `tool`, timeout reason |
 | `CONTAINMENT` | containment action and evidence |
 | `SCENARIO_END` | final decision and evidence ID |
+| `SCENARIO_DECISION` | final decision and evidence ID |
+| `APPROVED_RELEASE` | exact approval release, final `ALLOW`, and evidence |
+| `PDF_INSPECTED` | PDF path, SHA-256, page count and indicator summary |
 
 Never log raw approval codes, passwords, tokens or real personal data. `LogWriter` redacts secret-bearing keys, but callers must still avoid putting them in payloads.
 
 ## Replay contract
 
-`core.replay` selects only `CHECKPOINT_DECISION` events and re-runs the deterministic policy.
+`core.replay` selects `CHECKPOINT_DECISION` events and re-runs the deterministic policy. If an `APPROVED_RELEASE` event exists for a held request, replay also reports its deterministic final outcome without changing the original checkpoint decision.
 
 The log must contain:
 

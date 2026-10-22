@@ -12,6 +12,13 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Windows shortcut:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\setup.ps1
+```
+
 ## Run all tests
 
 ```powershell
